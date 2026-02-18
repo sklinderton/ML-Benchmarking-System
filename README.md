@@ -6,13 +6,13 @@
 
 ---
 
-## 📋 Descripción
+##  Descripción
 
 Sistema completo de benchmarking de modelos de Machine Learning con interfaz gráfica en Streamlit. 
 Soporta clasificación, regresión y series de tiempo con validación cruzada K-Fold, AUC-ROC, ajuste 
 de threshold y manejo de clases desbalanceadas.
 
-## 🏗️ Estructura del Proyecto
+##  Estructura del Proyecto
 
 ```
 mlbenchmark/
@@ -35,7 +35,7 @@ mlbenchmark/
 └── README.md
 ```
 
-## 🚀 Instalación
+##  Instalación
 
 ```bash
 # Clonar o descomprimir el proyecto
@@ -48,7 +48,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## ▶️ Ejecución
+##  Ejecución
 
 ### Aplicación Streamlit (GUI)
 ```bash
@@ -75,7 +75,7 @@ result = run_benchmark(
 print(result["results"])  # DataFrame con métricas de todos los modelos
 ```
 
-## 📦 Módulos del Paquete
+## Módulos del Paquete
 
 | Módulo | Funciones Principales |
 |--------|----------------------|
@@ -89,7 +89,7 @@ print(result["results"])  # DataFrame con métricas de todos los modelos
 | `models_timeseries` | `HoltWintersModel`, `ARIMAModel`, `LSTMModel`, `get_timeseries_models()` |
 | `benchmarking` | `run_benchmark()`, `rank_models()`, `benchmark_classification()` |
 
-## 🤖 Modelos Implementados
+##  Modelos Implementados
 
 ### Clasificación
 - Logistic Regression, Random Forest, Decision Tree
@@ -105,7 +105,7 @@ print(result["results"])  # DataFrame con métricas de todos los modelos
 - ARIMA(1,1,1) y ARIMA calibrado (búsqueda automática de orden)
 - LSTM (red neuronal recurrente)
 
-## 📊 Datasets Integrados
+##  Datasets Integrados
 
 | Dataset | Tipo | Muestras | Features |
 |---------|------|----------|----------|
@@ -114,7 +114,7 @@ print(result["results"])  # DataFrame con métricas de todos los modelos
 | California Housing | Regresión | 20,640 | 8 |
 | Airline Passengers | Series de Tiempo | 144 | — |
 
-## 📖 Referencias
+## Referencias
 
 - Hastie et al. (2009). The Elements of Statistical Learning.
 - Chawla et al. (2002). SMOTE: Synthetic Minority Over-sampling Technique.
