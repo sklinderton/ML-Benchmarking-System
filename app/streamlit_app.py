@@ -388,8 +388,13 @@ with tab_bench:
                             sel = st.session_state.get("selected_models", list(all_m.keys()))
                             models_to_run = {k: v for k, v in all_m.items() if k in sel}
 
+                        pt_map = {
+                            "Clasificación": "classification",
+                            "Regresión": "regression",
+                            "Series de Tiempo": "timeseries",
+                        }
                         result = run_benchmark(
-                            problem_type=problem_type.lower().replace("ó", "o").replace("ó","o"),
+                            problem_type=pt_map[problem_type],
                             X=X.values,
                             y=y.values,
                             models=models_to_run,
