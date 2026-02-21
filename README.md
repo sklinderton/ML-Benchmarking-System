@@ -1,66 +1,76 @@
-# 🤖 ML Benchmarking System
-**BCD-7213 – Minería de Datos Avanzada · Universidad LEAD · I Cuatrimestre 2026**
+# ML Benchmarking System
 
-> Melany Ramírez · Jason Barrantes · Junior Ramírez  
+**BCD-7213 – Advanced Data Mining · Universidad LEAD · Term I 2026**
+
+> Melany Ramírez · Jason Barrantes · Junior Ramírez
 > Dr. Juan Murillo-Morera
 
 ---
 
-## 📋 Descripción
+## Description
 
-Sistema completo de benchmarking de modelos de Machine Learning con interfaz gráfica en Streamlit. 
-Soporta clasificación, regresión y series de tiempo con validación cruzada K-Fold, AUC-ROC, ajuste 
-de threshold y manejo de clases desbalanceadas.
+Complete benchmarking system for Machine Learning models with a Streamlit graphical interface.
+Supports classification, regression, and time series with K-Fold cross-validation, AUC-ROC,
+threshold tuning, and handling of imbalanced classes.
 
-## 🏗️ Estructura del Proyecto
+---
+
+## Project Structure
 
 ```
 mlbenchmark/
-├── mlbenchmark/                  ← Paquete Python principal
+├── mlbenchmark/                  ← Main Python package
 │   ├── __init__.py
-│   ├── preprocessing.py          ← División, escalado, codificación
-│   ├── balancing.py              ← SMOTE, under-sampling, híbrido
-│   ├── metrics.py                ← Métricas de clasificación/regresión/TS
+│   ├── preprocessing.py          ← Splitting, scaling, encoding
+│   ├── balancing.py              ← SMOTE, under-sampling, hybrid methods
+│   ├── metrics.py                ← Classification/regression/TS metrics
 │   ├── validation.py             ← K-Fold, Stratified K-Fold
-│   ├── threshold.py              ← Ajuste y optimización de threshold
-│   ├── models_classification.py  ← Modelos de clasificación
-│   ├── models_regression.py      ← Modelos de regresión
+│   ├── threshold.py              ← Threshold tuning and optimization
+│   ├── models_classification.py  ← Classification models
+│   ├── models_regression.py      ← Regression models
 │   ├── models_timeseries.py      ← ARIMA, Holt-Winters, LSTM
-│   └── benchmarking.py           ← Orquestador principal
+│   └── benchmarking.py           ← Main orchestrator
 ├── app/
-│   └── streamlit_app.py          ← Interfaz gráfica Streamlit
-├── tests/                        ← Pruebas unitarias
+│   └── streamlit_app.py          ← Streamlit graphical interface
+├── tests/                        ← Unit tests
 ├── setup.py
 ├── requirements.txt
 └── README.md
 ```
 
-## 🚀 Instalación
+---
+
+## Installation
 
 ```bash
-# Clonar o descomprimir el proyecto
+# Clone or unzip the project
 cd mlbenchmark
 
-# Instalar dependencias
+# Install dependencies
 pip install -r requirements.txt
 
-# Instalar el paquete en modo desarrollo
+# Install the package in development mode
 pip install -e .
 ```
 
-## ▶️ Ejecución
+---
 
-### Aplicación Streamlit (GUI)
+## Execution
+
+### Streamlit Application (GUI)
+
 ```bash
 streamlit run app/streamlit_app.py
 ```
-Abre tu navegador en `http://localhost:8501`
 
-### Uso como paquete Python
+Open your browser at `http://localhost:8501`
+
+### Using as a Python package
+
 ```python
 from mlbenchmark.benchmarking import run_benchmark
 
-# Clasificación con SMOTE y K-Fold=5
+# Classification with SMOTE and K-Fold=5
 result = run_benchmark(
     problem_type="classification",
     X=X.values,
@@ -72,51 +82,62 @@ result = run_benchmark(
     scale=True,
 )
 
-print(result["results"])  # DataFrame con métricas de todos los modelos
+print(result["results"])  # DataFrame with metrics for all models
 ```
 
-## 📦 Módulos del Paquete
+---
 
-| Módulo | Funciones Principales |
-|--------|----------------------|
-| `preprocessing` | `split_data()`, `scale_features()`, `encode_categorical()`, `split_timeseries()` |
-| `balancing` | `apply_smote()`, `undersample()`, `apply_combined()`, `check_imbalance()` |
-| `metrics` | `classification_metrics()`, `regression_metrics()`, `timeseries_metrics()` |
-| `validation` | `kfold_validation()`, `stratified_kfold()`, `manual_kfold()` |
-| `threshold` | `apply_threshold()`, `optimize_threshold()`, `threshold_analysis()` |
-| `models_classification` | `get_classification_models()`, `predict_classification()` |
-| `models_regression` | `get_regression_models()` |
-| `models_timeseries` | `HoltWintersModel`, `ARIMAModel`, `LSTMModel`, `get_timeseries_models()` |
-| `benchmarking` | `run_benchmark()`, `rank_models()`, `benchmark_classification()` |
+## Package Modules
 
-## 🤖 Modelos Implementados
+| Module                  | Main Functions                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `preprocessing`         | `split_data()`, `scale_features()`, `encode_categorical()`, `split_timeseries()` |
+| `balancing`             | `apply_smote()`, `undersample()`, `apply_combined()`, `check_imbalance()`        |
+| `metrics`               | `classification_metrics()`, `regression_metrics()`, `timeseries_metrics()`       |
+| `validation`            | `kfold_validation()`, `stratified_kfold()`, `manual_kfold()`                     |
+| `threshold`             | `apply_threshold()`, `optimize_threshold()`, `threshold_analysis()`              |
+| `models_classification` | `get_classification_models()`, `predict_classification()`                        |
+| `models_regression`     | `get_regression_models()`                                                        |
+| `models_timeseries`     | `HoltWintersModel`, `ARIMAModel`, `LSTMModel`, `get_timeseries_models()`         |
+| `benchmarking`          | `run_benchmark()`, `rank_models()`, `benchmark_classification()`                 |
 
-### Clasificación
-- Logistic Regression, Random Forest, Decision Tree
-- SVM (RBF), K-Nearest Neighbors, Naive Bayes
-- Gradient Boosting, XGBoost (opcional)
+---
 
-### Regresión
-- Ridge, Lasso, Random Forest, Decision Tree
-- SVR, K-Nearest Neighbors, Gradient Boosting, XGBoost
+## Implemented Models
 
-### Series de Tiempo
-- Holt-Winters (estándar y calibrado)
-- ARIMA(1,1,1) y ARIMA calibrado (búsqueda automática de orden)
-- LSTM (red neuronal recurrente)
+### Classification
 
-## 📊 Datasets Integrados
+* Logistic Regression, Random Forest, Decision Tree
+* SVM (RBF), K-Nearest Neighbors, Naive Bayes
+* Gradient Boosting, XGBoost (optional)
 
-| Dataset | Tipo | Muestras | Features |
-|---------|------|----------|----------|
-| Breast Cancer Wisconsin | Clasificación | 569 | 30 |
-| Credit Card Fraud (Simulado) | Clasificación | 10,000 | 20 |
-| California Housing | Regresión | 20,640 | 8 |
-| Airline Passengers | Series de Tiempo | 144 | — |
+### Regression
 
-## 📖 Referencias
+* Ridge, Lasso, Random Forest, Decision Tree
+* SVR, K-Nearest Neighbors, Gradient Boosting, XGBoost
 
-- Hastie et al. (2009). The Elements of Statistical Learning.
-- Chawla et al. (2002). SMOTE: Synthetic Minority Over-sampling Technique.
-- Box et al. (2015). Time Series Analysis: Forecasting and Control.
-- Hochreiter & Schmidhuber (1997). Long Short-Term Memory.
+### Time Series
+
+* Holt-Winters (standard and tuned)
+* ARIMA(1,1,1) and tuned ARIMA (automatic order search)
+* LSTM (recurrent neural network)
+
+---
+
+## Included Datasets
+
+| Dataset                       | Type           | Samples | Features |
+| ----------------------------- | -------------- | ------- | -------- |
+| Breast Cancer Wisconsin       | Classification | 569     | 30       |
+| Credit Card Fraud (Simulated) | Classification | 10,000  | 20       |
+| California Housing            | Regression     | 20,640  | 8        |
+| Airline Passengers            | Time Series    | 144     | —        |
+
+---
+
+## References
+
+* Hastie et al. (2009). *The Elements of Statistical Learning.*
+* Chawla et al. (2002). *SMOTE: Synthetic Minority Over-sampling Technique.*
+* Box et al. (2015). *Time Series Analysis: Forecasting and Control.*
+* Hochreiter & Schmidhuber (1997). *Long Short-Term Memory.*
