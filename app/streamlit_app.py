@@ -301,9 +301,12 @@ with tab_explore:
 with tab_config:
     st.header("⚙️ Configuración del Experimento")
 
-    st.info("Los parámetros principales se configuran en el **panel lateral izquierdo**. "
-            "Aquí puedes ver y seleccionar los modelos a evaluar.")
+    st.info(
+        "Los parámetros principales se configuran en el **panel lateral izquierdo**. "
+        "Aquí puedes ver y seleccionar los modelos a evaluar."
+    )
 
+    # Modelos disponibles (según tipo de problema)
     if problem_type in ["Clasificación", "Regresión"]:
         st.subheader("🤖 Modelos Disponibles")
 
@@ -340,25 +343,38 @@ with tab_config:
     # Resumen de configuración
     st.divider()
     st.subheader("📋 Resumen de Configuración")
+
     config_data = {"Parámetro": [], "Valor": []}
     config_data["Parámetro"].append("Tipo de Problema")
     config_data["Valor"].append(problem_type)
+
     config_data["Parámetro"].append("Dataset")
     config_data["Valor"].append(selected_dataset)
 
     if problem_type != "Series de Tiempo":
         config_data["Parámetro"].extend(["Test Size", "K-Folds", "Escalar Features"])
-        config_data["Valor"].extend([f"{int(test_size*100)}%", cv_folds, scale_features_flag])
+        config_data["Valor"].extend([
+            f"{int(test_size * 100)}%",
+            cv_folds,
+            scale_features_flag
+        ])
+
         if problem_type == "Clasificación":
             config_data["Parámetro"].extend(["Threshold", "Balanceo"])
             config_data["Valor"].extend([threshold, balancing])
+
     else:
         config_data["Parámetro"].extend(["Train Ratio", "Períodos Estacionales"])
-        config_data["Valor"].extend([f"{int(train_ratio*100)}%", seasonal_periods])
+        config_data["Valor"].extend([
+            f"{int(train_ratio * 100)}%",
+            seasonal_periods
+        ])
 
-    st.dataframe(pd.DataFrame(config_data), use_container_width=True)
+    # ✅ FIX ArrowTypeError: convertir todo a texto (evita mezcla de tipos en 'Valor')
+    config_df = pd.DataFrame(config_data)
+    config_df["Valor"] = config_df["Valor"].astype(str)
 
-
+    st.dataframe(config_df, use_container_width=True)
 # ═════════════════════════════════════════════════════════════════════
 # TAB 3: BENCHMARKING
 # ═════════════════════════════════════════════════════════════════════
@@ -389,14 +405,14 @@ with tab_bench:
                             models_to_run = {k: v for k, v in all_m.items() if k in sel}
 
                         result = run_benchmark(
-                            problem_type=problem_type.lower().replace("ó", "o").replace("ó","o"),
+                            problem_type={"Clasificación": "classification", "Regresión": "regression"}.get(problem_type, problem_type),
                             X=X.values,
                             y=y.values,
                             models=models_to_run,
                             test_size=test_size,
                             cv_folds=cv_folds,
-                            threshold=threshold if problem_type == "Clasificación" else 0.5,
-                            balancing_technique=balancing if problem_type == "Clasificación" else "none",
+                            threshold=threshold if problem_type == "Clasification" else 0.5,
+                            balancing_technique=balancing if problem_type == "Clasification" else "none",
                             scale=scale_features_flag,
                         )
 
@@ -436,6 +452,7 @@ with tab_bench:
             # Columnas a mostrar (sin columnas internas _)
             display_cols = [c for c in df.columns if not c.startswith("_")]
             display_df = df[display_cols].copy()
+            display_df = display_df.astype(str)
 
             # Color-coding
             st.dataframe(
