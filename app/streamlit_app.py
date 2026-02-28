@@ -1,7 +1,6 @@
 """
 streamlit_app.py - Aplicación Streamlit para Benchmarking de ML
-BCD-7213 Minería de Datos Avanzada - Universidad LEAD
-Estudiantes: Melany Ramirez, Jason Barrantes, Junior Ramirez
+Melany Ramirez
 """
 
 import streamlit as st
@@ -21,8 +20,55 @@ from mlbenchmark.balancing import check_imbalance
 from mlbenchmark.threshold import threshold_analysis, optimize_threshold
 from mlbenchmark.metrics import roc_curve_data, precision_recall_curve_data
 
+# =========================
+# GRAFICOS: PALETA A COLOR
+# =========================
+PLOTLY_TEMPLATE = "plotly_dark"
+COLOR_SCALE_MAIN = "Viridis"
+COLOR_SCALE_REVERSE = "Plasma"
+DISCRETE_COLORS = [
+    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
+    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC"
+]
+
+# =========================
+# TABLAS CON COLOR
+# =========================
+def style_color_table(df: pd.DataFrame):
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    styler = df.style
+
+    # Formato numérico
+    float_cols = df.select_dtypes(include=["float", "float64", "float32"]).columns.tolist()
+    styler = styler.format({c: "{:.4f}" for c in float_cols})
+
+    # Fondo en color + texto blanco
+    if num_cols:
+        styler = styler.background_gradient(subset=num_cols, cmap="viridis")
+        styler = styler.set_properties(subset=num_cols, **{"color": "white"})
+
+    # Encabezados oscuros
+    styler = styler.set_table_styles([
+        {
+            "selector": "th",
+            "props": [
+                ("background-color", "#1e1e1e"),
+                ("color", "#e0e0e0"),
+                ("border-color", "#333"),
+            ],
+        },
+        {
+            "selector": "td",
+            "props": [
+                ("border-color", "#333"),
+            ],
+        },
+    ])
+
+    return styler
 # ─── Datasets integrados ───────────────────────────────────────────────────────
-@st.cache_data
+
 def load_dataset(name, problem_type):
     """Carga datasets predefinidos."""
     from sklearn.datasets import load_breast_cancer, fetch_california_housing
@@ -41,7 +87,7 @@ def load_dataset(name, problem_type):
             n = 10000
             n_fraud = 200
             X_normal = rng.randn(n - n_fraud, 20)
-            X_fraud  = rng.randn(n_fraud, 20) + 2.5
+            X_fraud = rng.randn(n_fraud, 20) + 2.5
             X = np.vstack([X_normal, X_fraud])
             y = np.array([0] * (n - n_fraud) + [1] * n_fraud)
             cols = [f"feature_{i}" for i in range(20)]
@@ -61,7 +107,6 @@ def load_dataset(name, problem_type):
             try:
                 df = pd.read_csv(url, header=0, index_col=0, parse_dates=True, squeeze=True)
             except Exception:
-                # Datos integrados como fallback
                 passengers = [
                     112,118,132,129,121,135,148,148,136,119,104,118,
                     115,126,141,135,125,149,170,170,158,133,114,140,
@@ -82,10 +127,22 @@ def load_dataset(name, problem_type):
     return None
 
 
+def read_uploaded_table(uploaded_file) -> pd.DataFrame:
+    """Lee un archivo subido (csv/xlsx/json) en un DataFrame."""
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if name.endswith(".json"):
+        return pd.read_json(uploaded_file)
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        return pd.read_excel(uploaded_file)
+    raise ValueError("Formato no soportado. Usa CSV, Excel o JSON.")
+
+
 # ─── Configuración de página ───────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ML Benchmarking System",
-    page_icon="🤖",
+    page_title = "ML Benchmarking System - DatabyMel",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -93,79 +150,194 @@ st.set_page_config(
 # ─── CSS personalizado ─────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;700&display=swap');
+
+    html, body, [class*="css"], [class*="st-"], .stApp, .stApp * {
+        font-family: 'Poppins', sans-serif !important;
+    }
+
+    .stApp {
+        background: #121212;
+        color: #e0e0e0;
+    }
+
+    section[data-testid="stSidebar"] {
+        background: #1e1e1e;
+        border-right: 1px solid #333;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #e0e0e0;
+    }
+    section[data-testid="stSidebar"] hr {
+        border-color: #333;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+        color: #e0e0e0;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+    }
+    p, li, span, label, div {
+        color: #d6d6d6;
+    }
+
     .main-header {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        background: linear-gradient(135deg, #121212 0%, #202020 50%, #1a1a1a 100%);
         padding: 2rem;
         border-radius: 12px;
         text-align: center;
         margin-bottom: 2rem;
+        border: 1px solid #333;
+        box-shadow: 0 8px 18px rgba(0,0,0,0.35);
     }
-    .main-header h1 { color: #e94560; font-size: 2.2rem; margin: 0; }
-    .main-header p { color: #a8b2d8; margin: 0.5rem 0 0 0; }
+    .main-header h1 {
+        color: #e0e0e0;
+        font-size: 2.2rem;
+        margin: 0;
+    }
+    .main-header p {
+        color: #bdbdbd;
+        margin: 0.5rem 0 0 0;
+    }
+    .main-header .authors {
+        color: #bdbdbd;
+        font-size: 0.9rem;
+    }
 
     .metric-card {
-        background: #16213e;
-        border: 1px solid #0f3460;
+        background: #333;
+        border: 1px solid #444;
         border-radius: 10px;
         padding: 1rem;
         text-align: center;
+        box-shadow: 0 6px 14px rgba(0,0,0,0.25);
     }
+
     .best-model-banner {
-        background: linear-gradient(135deg, #0f3460, #e94560);
+        background: linear-gradient(135deg, #1e1e1e 0%, #333 60%, #2a2a2a 100%);
         padding: 1.5rem;
         border-radius: 12px;
-        color: white;
+        color: #e0e0e0;
         text-align: center;
         margin-bottom: 1rem;
+        border: 1px solid #444;
+        box-shadow: 0 10px 22px rgba(0,0,0,0.35);
     }
-    .stAlert { border-radius: 8px; }
+    .best-model-banner h2, .best-model-banner h3, .best-model-banner p {
+        color: #e0e0e0;
+        margin: 0.25rem 0;
+    }
+
+    .stTextInput input, .stNumberInput input, .stSelectbox select, .stMultiSelect div, .stTextArea textarea {
+        background: #1e1e1e !important;
+        color: #e0e0e0 !important;
+        border: 1px solid #444 !important;
+        border-radius: 10px !important;
+    }
+    div[data-baseweb="select"] > div {
+        background: #1e1e1e !important;
+        border: 1px solid #444 !important;
+        border-radius: 10px !important;
+        color: #e0e0e0 !important;
+    }
+    .stSlider [data-baseweb="slider"] * {
+        color: #e0e0e0 !important;
+    }
+    .stCheckbox label, .stRadio label {
+        color: #d6d6d6 !important;
+    }
+
+    .stButton button {
+        background: #333 !important;
+        color: #e0e0e0 !important;
+        border: 1px solid #555 !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        padding: 0.55rem 0.9rem !important;
+        transition: all 0.15s ease-in-out;
+    }
+    .stButton button:hover {
+        background: #3a3a3a !important;
+        border-color: #777 !important;
+        transform: translateY(-1px);
+    }
+    .stButton button:active {
+        transform: translateY(0px);
+    }
+
+    .stDataFrame, .stDataFrame * {
+        color: #e0e0e0 !important;
+    }
+    div[data-testid="stDataFrame"] {
+        background: #1e1e1e;
+        border: 1px solid #333;
+        border-radius: 12px;
+        padding: 0.25rem;
+        overflow: hidden;
+    }
+
+    .stAlert {
+        border-radius: 10px;
+        border: 1px solid #444;
+        background: #1e1e1e;
+        color: #e0e0e0;
+    }
+    div[data-testid="stAlert"] p {
+        color: #e0e0e0 !important;
+    }
+
+    hr {
+        border-color: #333 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── Encabezado ───────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-header">
-    <h1>🤖 ML Benchmarking System</h1>
-    <p>BCD-7213 Minería de Datos Avanzada · Universidad LEAD · I Cuatrimestre 2026</p>
-    <p style="color:#e94560; font-size:0.85rem;">Melany Ramírez · Jason Barrantes · Junior Ramírez</p>
+    <h1> ML Benchmarking System</h1>
+    <p">Melany Ramírez - DatabyMel</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/2/2d/Tensorflow_logo.svg/115px-Tensorflow_logo.svg.png",
-             width=60)
-    st.title("⚙️ Configuración")
+    st.title("Configuración")
     st.divider()
 
-    # Tipo de problema
     problem_type = st.selectbox(
-        "🎯 Tipo de Problema",
+        "Tipo de Problema",
         ["Clasificación", "Regresión", "Series de Tiempo"],
         help="Selecciona el tipo de problema de Machine Learning"
     )
 
-    # Dataset según tipo
-    st.subheader("📂 Dataset")
+    st.subheader("Dataset")
     dataset_options = {
-        "Clasificación": ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)"],
-        "Regresión": ["California Housing"],
-        "Series de Tiempo": ["Airline Passengers"],
+        "Clasificación": ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)", "Archivo (CSV/Excel/JSON)"],
+        "Regresión": ["California Housing", "Archivo (CSV/Excel/JSON)"],
+        "Series de Tiempo": ["Airline Passengers", "Archivo (CSV/Excel/JSON)"],
     }
     selected_dataset = st.selectbox("Dataset", dataset_options[problem_type])
 
+    uploaded_file = None
+    if selected_dataset == "Archivo (CSV/Excel/JSON)":
+        uploaded_file = st.file_uploader(
+            "Sube tu dataset",
+            type=["csv", "xlsx", "xls", "json"],
+            accept_multiple_files=False
+        )
+
     st.divider()
 
-    # Parámetros según tipo
     if problem_type in ["Clasificación", "Regresión"]:
-        st.subheader("🔧 Parámetros del Experimento")
+        st.subheader("Parámetros del Experimento")
         test_size = st.slider("Tamaño del Test Set (%)", 10, 50, 30, 5) / 100
         cv_folds = st.slider("Número de Folds (K-Fold)", 3, 10, 5)
         scale_features_flag = st.checkbox("Escalar Features (StandardScaler)", value=True)
 
         if problem_type == "Clasificación":
             st.divider()
-            st.subheader("📊 Clasificación")
+            st.subheader("Clasificación")
             threshold = st.slider("Threshold de Decisión", 0.1, 0.9, 0.5, 0.05)
             balancing = st.selectbox(
                 "Técnica de Balanceo",
@@ -177,14 +349,17 @@ with st.sidebar:
                     "combined": "Híbrido (SMOTE + Under)",
                 }[x]
             )
+        else:
+            threshold = 0.5
+            balancing = "none"
 
-    elif problem_type == "Series de Tiempo":
-        st.subheader("📈 Series de Tiempo")
+    else:
+        st.subheader("Series de Tiempo")
         train_ratio = st.slider("Ratio de Entrenamiento (%)", 60, 90, 80, 5) / 100
         seasonal_periods = st.selectbox("Períodos Estacionales", [4, 12, 24, 52], index=1)
 
     st.divider()
-    st.caption("💡 Configura los parámetros y carga el dataset para comenzar.")
+    st.caption("Configura los parámetros y carga el dataset para comenzar.")
 
 # ─── Estado de la aplicación ──────────────────────────────────────────────────
 if "data_loaded" not in st.session_state:
@@ -196,25 +371,40 @@ if "results" not in st.session_state:
 
 # ─── Tabs principales ─────────────────────────────────────────────────────────
 tab_explore, tab_config, tab_bench, tab_detail, tab_best = st.tabs([
-    "🔍 Exploración",
-    "⚙️ Configuración",
-    "🏆 Benchmarking",
-    "📊 Resultados Detallados",
-    "🥇 Mejor Modelo",
+    "Exploración de Datos",
+    "Configuración del Experimento",
+    "Benchmarking de Modelos",
+    "Resultados Detallados",
+    "Mejor Modelo",
 ])
 
 # ═════════════════════════════════════════════════════════════════════
 # TAB 1: EXPLORACIÓN DE DATOS
 # ═════════════════════════════════════════════════════════════════════
 with tab_explore:
-    st.header("🔍 Exploración del Dataset")
+    st.header("Exploración del Dataset")
 
     col_load, col_info = st.columns([1, 3])
 
     with col_load:
-        if st.button("📥 Cargar Dataset", type="primary", use_container_width=True):
+        if st.button("Cargar Dataset", type="primary", use_container_width=True):
             with st.spinner(f"Cargando {selected_dataset}..."):
                 try:
+                    if selected_dataset == "Archivo (CSV/Excel/JSON)":
+                        if uploaded_file is None:
+                            st.error("Sube un archivo primero.")
+                            st.stop()
+
+                        dfu = read_uploaded_table(uploaded_file)
+                        dfu.columns = [str(c).strip() for c in dfu.columns]
+                        st.session_state.uploaded_df = dfu
+
+                        st.session_state.data_loaded = True
+                        st.session_state.benchmark_run = False
+                        st.session_state.results = None
+                        st.success("Archivo cargado. Configura las columnas abajo.")
+                        st.stop()
+
                     if problem_type != "Series de Tiempo":
                         X, y, feature_names = load_dataset(selected_dataset, problem_type)
                         st.session_state.X = X
@@ -226,25 +416,71 @@ with tab_explore:
 
                     st.session_state.data_loaded = True
                     st.session_state.benchmark_run = False
-                    st.success("✅ Dataset cargado!")
+                    st.session_state.results = None
+                    st.success("Dataset cargado.")
                 except Exception as e:
                     st.error(f"Error cargando datos: {e}")
 
     if st.session_state.data_loaded:
+        if selected_dataset == "Archivo (CSV/Excel/JSON)" and "uploaded_df" in st.session_state:
+            dfu = st.session_state.uploaded_df
+
+            st.subheader("Configurar dataset (archivo)")
+
+            if problem_type in ["Clasificación", "Regresión"]:
+                target_col = st.selectbox("Columna target", dfu.columns.tolist())
+
+                X_raw = dfu.drop(columns=[target_col]).copy()
+                y_raw = dfu[target_col].copy()
+
+                X_enc = pd.get_dummies(X_raw, drop_first=False)
+
+                if problem_type == "Regresión":
+                    y_num = pd.to_numeric(y_raw, errors="coerce")
+                    if y_num.isna().any():
+                        st.error("La columna target para regresión debe ser numérica.")
+                        st.stop()
+                    y_final = pd.Series(y_num.values, name=str(target_col))
+                else:
+                    if y_raw.dtype == "object" or str(y_raw.dtype).startswith("category"):
+                        y_codes, _ = pd.factorize(y_raw.astype(str))
+                        y_final = pd.Series(y_codes, name=str(target_col))
+                    else:
+                        y_final = pd.Series(y_raw.values, name=str(target_col))
+
+                st.session_state.X = X_enc
+                st.session_state.y = y_final
+                st.session_state.feature_names = X_enc.columns.tolist()
+
+                st.success("Dataset listo para benchmarking.")
+
+            else:
+                date_col = st.selectbox("Columna de fecha", dfu.columns.tolist())
+                value_col = st.selectbox("Columna de valor", [c for c in dfu.columns if c != date_col])
+
+                df_ts = dfu[[date_col, value_col]].copy()
+                df_ts[date_col] = pd.to_datetime(df_ts[date_col], errors="coerce")
+                df_ts = df_ts.dropna(subset=[date_col])
+                df_ts = df_ts.sort_values(date_col)
+
+                series = pd.Series(df_ts[value_col].values, index=df_ts[date_col].values, name=str(value_col))
+                st.session_state.series = series
+
+                st.success("Serie temporal lista para benchmarking.")
+
         if problem_type != "Series de Tiempo":
             X = st.session_state.X
             y = st.session_state.y
 
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("🗃️ Muestras", f"{len(X):,}")
-            col2.metric("📐 Features", len(X.columns))
-            col3.metric("🎯 Target", y.name)
+            col1.metric("Muestras", f"{len(X):,}")
+            col2.metric("Features", len(X.columns))
+            col3.metric("Target", y.name)
 
             if problem_type == "Clasificación":
                 imb = check_imbalance(y.values)
-                col4.metric("⚖️ Ratio Clases", f"{imb['ratio']:.3f}")
+                col4.metric("Ratio de Clases", f"{imb['ratio']:.3f}")
 
-                # Distribución de clases
                 st.subheader("Distribución de Clases")
                 c1, c2 = st.columns(2)
                 with c1:
@@ -252,63 +488,74 @@ with tab_explore:
                         "Clase": imb["classes"],
                         "Conteo": imb["counts"],
                     })
-                    fig_bar = px.bar(class_df, x="Clase", y="Conteo",
-                                     color="Conteo",
-                                     color_continuous_scale="RdYlGn",
-                                     title="Conteo por Clase")
+                    fig_bar = px.bar(
+                        class_df, x="Clase", y="Conteo",
+                        color="Conteo",
+                        color_continuous_scale=COLOR_SCALE_MAIN,
+                        title="Conteo por Clase",
+                        template=PLOTLY_TEMPLATE
+                    )
                     st.plotly_chart(fig_bar, use_container_width=True)
 
                 with c2:
-                    fig_pie = px.pie(class_df, values="Conteo", names="Clase",
-                                     title="Proporción de Clases",
-                                     color_discrete_sequence=["#0f3460","#e94560"])
+                    fig_pie = px.pie(
+                        class_df, values="Conteo", names="Clase",
+                        title="Proporción de Clases",
+                        color_discrete_sequence=DISCRETE_COLORS,
+                        template=PLOTLY_TEMPLATE
+                    )
                     st.plotly_chart(fig_pie, use_container_width=True)
 
                 if imb["is_imbalanced"]:
-                    st.warning(f"⚠️ Dataset desbalanceado (ratio={imb['ratio']:.3f}). "
-                               f"Severidad: **{imb['severity']}**. Considera usar SMOTE o under-sampling.")
+                    st.warning(
+                        f"Dataset desbalanceado (ratio={imb['ratio']:.3f}). "
+                        f"Severidad: **{imb['severity']}**. Considera usar SMOTE o under-sampling."
+                    )
 
-            # Estadísticas descriptivas
-            st.subheader("📋 Estadísticas Descriptivas")
+            st.subheader("Estadísticas Descriptivas")
             st.dataframe(X.describe().round(3), use_container_width=True)
 
-            # Correlación (top features)
             if len(X.columns) <= 30:
-                st.subheader("🔗 Mapa de Correlación")
-                corr = X.corr()
-                fig_corr = px.imshow(corr, color_continuous_scale="RdBu_r",
-                                     title="Matriz de Correlación",
-                                     aspect="auto")
+                st.subheader("Mapa de Correlación")
+                corr = X.corr(numeric_only=True)
+                fig_corr = px.imshow(
+                    corr,
+                    color_continuous_scale=COLOR_SCALE_MAIN,
+                    title="Matriz de Correlación",
+                    aspect="auto"
+                )
+                fig_corr.update_layout(template=PLOTLY_TEMPLATE)
                 st.plotly_chart(fig_corr, use_container_width=True)
 
         else:
             series = st.session_state.series
-            st.metric("📅 Observaciones", len(series))
+            st.metric("Observaciones", len(series))
 
-            fig_ts = px.line(y=series.values if hasattr(series, 'values') else series,
-                             title=f"Serie Temporal: {selected_dataset}",
-                             labels={"index": "Tiempo", "y": "Valor"})
-            fig_ts.update_traces(line_color="#e94560")
+            fig_ts = px.line(
+                y=series.values if hasattr(series, "values") else series,
+                title=f"Serie Temporal: {selected_dataset}",
+                labels={"index": "Tiempo", "y": "Valor"},
+                template=PLOTLY_TEMPLATE
+            )
+            fig_ts.update_traces(line_color=DISCRETE_COLORS[0])
             st.plotly_chart(fig_ts, use_container_width=True)
 
     else:
-        st.info("👈 Presiona **Cargar Dataset** para comenzar la exploración.")
-
+        st.info("Presiona Cargar Dataset para comenzar la exploración.")
 
 # ═════════════════════════════════════════════════════════════════════
 # TAB 2: CONFIGURACIÓN
 # ═════════════════════════════════════════════════════════════════════
 with tab_config:
-    st.header("⚙️ Configuración del Experimento")
+    st.header("Configuración del Experimento")
 
     st.info(
-        "Los parámetros principales se configuran en el **panel lateral izquierdo**. "
+        "Los parámetros principales se configuran en el panel lateral izquierdo. "
         "Aquí puedes ver y seleccionar los modelos a evaluar."
     )
 
-    # Modelos disponibles (según tipo de problema)
     if problem_type in ["Clasificación", "Regresión"]:
-        st.subheader("🤖 Modelos Disponibles")
+        st.subheader("Modelos Disponibles")
 
         if problem_type == "Clasificación":
             all_models = [
@@ -329,7 +576,7 @@ with tab_config:
         st.session_state.selected_models = selected_models
 
     else:
-        st.subheader("📈 Modelos de Series de Tiempo")
+        st.subheader("Modelos de Series de Tiempo")
         ts_models = [
             "Holt-Winters",
             "Holt-Winters Calibrado",
@@ -340,9 +587,8 @@ with tab_config:
         sel_ts = st.multiselect("Modelos:", ts_models, default=ts_models[:4])
         st.session_state.selected_ts_models = sel_ts
 
-    # Resumen de configuración
     st.divider()
-    st.subheader("📋 Resumen de Configuración")
+    st.subheader("Resumen de Configuración")
 
     config_data = {"Parámetro": [], "Valor": []}
     config_data["Parámetro"].append("Tipo de Problema")
@@ -370,28 +616,33 @@ with tab_config:
             seasonal_periods
         ])
 
-    # ✅ FIX ArrowTypeError: convertir todo a texto (evita mezcla de tipos en 'Valor')
     config_df = pd.DataFrame(config_data)
     config_df["Valor"] = config_df["Valor"].astype(str)
 
     st.dataframe(config_df, use_container_width=True)
+
 # ═════════════════════════════════════════════════════════════════════
 # TAB 3: BENCHMARKING
 # ═════════════════════════════════════════════════════════════════════
 with tab_bench:
-    st.header("🏆 Benchmarking de Modelos")
+    st.header("Benchmarking de Modelos")
 
     if not st.session_state.data_loaded:
-        st.warning("⚠️ Primero carga el dataset en la pestaña **Exploración**.")
+        st.warning("Primero carga el dataset en la pestaña Exploración de Datos.")
     else:
-        if st.button("🚀 Iniciar Benchmarking", type="primary", use_container_width=True):
-            with st.spinner("⏳ Entrenando y evaluando modelos... Esto puede tomar unos momentos."):
+        if selected_dataset == "Archivo (CSV/Excel/JSON)":
+            if problem_type in ["Clasificación", "Regresión"] and ("X" not in st.session_state or "y" not in st.session_state):
+                st.warning("Configura la columna target en Exploración de Datos antes de iniciar.")
+            if problem_type == "Series de Tiempo" and "series" not in st.session_state:
+                st.warning("Configura las columnas de fecha y valor en Exploración de Datos antes de iniciar.")
+
+        if st.button("Iniciar Benchmarking", type="primary", use_container_width=True):
+            with st.spinner("Entrenando y evaluando modelos..."):
                 try:
                     if problem_type != "Series de Tiempo":
                         X = st.session_state.X
                         y = st.session_state.y
 
-                        # Filtrar modelos seleccionados
                         from mlbenchmark.models_classification import get_classification_models
                         from mlbenchmark.models_regression import get_regression_models
 
@@ -399,20 +650,22 @@ with tab_bench:
                             all_m = get_classification_models()
                             sel = st.session_state.get("selected_models", list(all_m.keys()))
                             models_to_run = {k: v for k, v in all_m.items() if k in sel}
+                            pt_key = "classification"
                         else:
                             all_m = get_regression_models()
                             sel = st.session_state.get("selected_models", list(all_m.keys()))
                             models_to_run = {k: v for k, v in all_m.items() if k in sel}
+                            pt_key = "regression"
 
                         result = run_benchmark(
-                            problem_type={"Clasificación": "classification", "Regresión": "regression"}.get(problem_type, problem_type),
+                            problem_type=pt_key,
                             X=X.values,
                             y=y.values,
                             models=models_to_run,
                             test_size=test_size,
                             cv_folds=cv_folds,
-                            threshold=threshold if problem_type == "Clasification" else 0.5,
-                            balancing_technique=balancing if problem_type == "Clasification" else "none",
+                            threshold=threshold if problem_type == "Clasificación" else 0.5,
+                            balancing_technique=balancing if problem_type == "Clasificación" else "none",
                             scale=scale_features_flag,
                         )
 
@@ -434,52 +687,46 @@ with tab_bench:
 
                     st.session_state.results = result
                     st.session_state.benchmark_run = True
-                    st.success("✅ ¡Benchmarking completado!")
+                    st.success("Benchmarking completado.")
 
                 except Exception as e:
                     import traceback
-                    st.error(f"❌ Error durante el benchmarking: {e}")
+                    st.error(f"Error durante el benchmarking: {e}")
                     st.code(traceback.format_exc())
 
-        # Mostrar resultados si existen
         if st.session_state.benchmark_run and st.session_state.results:
             res = st.session_state.results
             df = res["results"]
             pt = res["problem_type"]
 
-            st.subheader("📊 Tabla Comparativa de Modelos")
+            st.subheader("Tabla Comparativa de Modelos")
 
-            # Columnas a mostrar (sin columnas internas _)
             display_cols = [c for c in df.columns if not c.startswith("_")]
             display_df = df[display_cols].copy()
-            display_df = display_df.astype(str)
 
-            # Color-coding
             st.dataframe(
-                display_df.style.format(
-                    {c: "{:.4f}" for c in display_df.select_dtypes("float").columns}
-                ).background_gradient(
-                    subset=[c for c in display_df.columns if c not in ("Model", "CV Scores")],
-                    cmap="RdYlGn"
-                ),
+                style_color_table(display_df),
                 use_container_width=True
             )
 
-            # Gráfico de barras comparativo
-            st.subheader("📈 Comparación Visual")
+            st.subheader("Comparación Visual")
 
             if pt == "classification":
-                metric_to_plot = st.selectbox("Métrica a visualizar:",
-                                               ["AUC-ROC", "Accuracy", "F1-Score", "Recall", "CV Mean"])
-                fig_bar = px.bar(display_df, x="Model", y=metric_to_plot,
-                                  color=metric_to_plot,
-                                  color_continuous_scale="RdYlGn",
-                                  title=f"Comparación por {metric_to_plot}",
-                                  text=metric_to_plot)
+                metric_to_plot = st.selectbox(
+                    "Métrica a visualizar:",
+                    ["AUC-ROC", "Accuracy", "F1-Score", "Recall", "CV Mean"]
+                )
+                fig_bar = px.bar(
+                    display_df, x="Model", y=metric_to_plot,
+                    color=metric_to_plot,
+                    color_continuous_scale=COLOR_SCALE_MAIN,
+                    title=f"Comparación por {metric_to_plot}",
+                    text=metric_to_plot,
+                    template=PLOTLY_TEMPLATE
+                )
                 fig_bar.update_traces(texttemplate="%{text:.3f}", textposition="outside")
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-                # Error bars con CV
                 if "CV Mean" in display_df.columns and "CV Std" in display_df.columns:
                     fig_cv = go.Figure()
                     fig_cv.add_trace(go.Bar(
@@ -487,66 +734,90 @@ with tab_bench:
                         y=display_df["CV Mean"],
                         error_y=dict(type="data", array=display_df["CV Std"]),
                         name="CV Mean ± Std",
-                        marker_color="#e94560",
+                        marker_color=DISCRETE_COLORS[0],
                     ))
-                    fig_cv.update_layout(title="K-Fold Cross-Validation (Mean ± Std)",
-                                          xaxis_tickangle=-30)
+                    fig_cv.update_layout(
+                        title="K-Fold Cross-Validation (Mean ± Std)",
+                        xaxis_tickangle=-30,
+                        template=PLOTLY_TEMPLATE
+                    )
                     st.plotly_chart(fig_cv, use_container_width=True)
 
             elif pt == "regression":
                 c1, c2 = st.columns(2)
                 with c1:
-                    fig_r2 = px.bar(display_df, x="Model", y="R²",
-                                    color="R²", color_continuous_scale="Viridis",
-                                    title="R² Score por Modelo", text="R²")
+                    fig_r2 = px.bar(
+                        display_df, x="Model", y="R²",
+                        color="R²",
+                        color_continuous_scale=COLOR_SCALE_MAIN,
+                        title="R² Score por Modelo",
+                        text="R²",
+                        template=PLOTLY_TEMPLATE
+                    )
                     fig_r2.update_traces(texttemplate="%{text:.3f}", textposition="outside")
                     st.plotly_chart(fig_r2, use_container_width=True)
                 with c2:
-                    fig_rmse = px.bar(display_df, x="Model", y="RMSE",
-                                      color="RMSE", color_continuous_scale="RdYlGn_r",
-                                      title="RMSE por Modelo", text="RMSE")
+                    fig_rmse = px.bar(
+                        display_df, x="Model", y="RMSE",
+                        color="RMSE",
+                        color_continuous_scale=COLOR_SCALE_REVERSE,
+                        title="RMSE por Modelo",
+                        text="RMSE",
+                        template=PLOTLY_TEMPLATE
+                    )
                     fig_rmse.update_traces(texttemplate="%{text:.3f}", textposition="outside")
                     st.plotly_chart(fig_rmse, use_container_width=True)
 
             elif pt == "timeseries":
-                fig_ts_bar = px.bar(display_df, x="Model", y="RMSE",
-                                    color="RMSE", color_continuous_scale="RdYlGn_r",
-                                    title="RMSE por Modelo (menor = mejor)", text="RMSE")
+                fig_ts_bar = px.bar(
+                    display_df, x="Model", y="RMSE",
+                    color="RMSE",
+                    color_continuous_scale=COLOR_SCALE_REVERSE,
+                    title="RMSE por Modelo (menor = mejor)",
+                    text="RMSE",
+                    template=PLOTLY_TEMPLATE
+                )
                 fig_ts_bar.update_traces(texttemplate="%{text:.2f}", textposition="outside")
                 st.plotly_chart(fig_ts_bar, use_container_width=True)
 
-                # Forecasts
                 train = res["train"]
                 test = res["test"]
                 fig_f = go.Figure()
-                fig_f.add_trace(go.Scatter(y=list(train), name="Train",
-                                            line=dict(color="#a8b2d8")))
                 fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train)+len(test))),
-                    y=list(test), name="Real", line=dict(color="#00b4d8", width=2)))
+                    y=list(train), name="Train",
+                    line=dict(color=DISCRETE_COLORS[8])
+                ))
+                fig_f.add_trace(go.Scatter(
+                    x=list(range(len(train), len(train) + len(test))),
+                    y=list(test), name="Real",
+                    line=dict(color=DISCRETE_COLORS[2], width=2)
+                ))
 
-                colors = ["#e94560", "#06d6a0", "#ffd166", "#ef476f", "#118ab2"]
+                colors = DISCRETE_COLORS
                 for i, row in df.iterrows():
                     if row.get("_predictions") is not None:
                         fig_f.add_trace(go.Scatter(
-                            x=list(range(len(train), len(train)+len(test))),
+                            x=list(range(len(train), len(train) + len(test))),
                             y=row["_predictions"],
                             name=row["Model"],
                             line=dict(color=colors[i % len(colors)], dash="dash"),
                         ))
-                fig_f.update_layout(title="Forecasts vs Valores Reales",
-                                     xaxis_title="Tiempo", yaxis_title="Valor")
+                fig_f.update_layout(
+                    title="Forecasts vs Valores Reales",
+                    xaxis_title="Tiempo",
+                    yaxis_title="Valor",
+                    template=PLOTLY_TEMPLATE
+                )
                 st.plotly_chart(fig_f, use_container_width=True)
-
 
 # ═════════════════════════════════════════════════════════════════════
 # TAB 4: RESULTADOS DETALLADOS
 # ═════════════════════════════════════════════════════════════════════
 with tab_detail:
-    st.header("📊 Resultados Detallados por Modelo")
+    st.header("Resultados Detallados por Modelo")
 
     if not st.session_state.benchmark_run:
-        st.warning("⚠️ Ejecuta el benchmarking primero.")
+        st.warning("Ejecuta el benchmarking primero.")
     else:
         res = st.session_state.results
         df = res["results"]
@@ -557,7 +828,6 @@ with tab_detail:
             selected_model = st.selectbox("Selecciona un modelo:", model_names)
             row = df[df["Model"] == selected_model].iloc[0]
 
-            # Métricas principales
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Accuracy", f"{row['Accuracy']:.4f}")
             c2.metric("Precision", f"{row['Precision']:.4f}")
@@ -567,7 +837,6 @@ with tab_detail:
 
             col_roc, col_cm = st.columns(2)
 
-            # Curva ROC
             with col_roc:
                 y_test = res["y_test"]
                 y_prob = row["_y_prob"]
@@ -575,68 +844,88 @@ with tab_detail:
                     try:
                         fpr, tpr, _ = roc_curve_data(y_test, y_prob)
                         fig_roc = go.Figure()
-                        fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, fill="tozeroy",
-                                                      name=f"AUC={row['AUC-ROC']:.4f}",
-                                                      line=dict(color="#e94560", width=2)))
-                        fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1],
-                                                      line=dict(dash="dash", color="gray"),
-                                                      name="Aleatorio"))
-                        fig_roc.update_layout(title="Curva ROC",
-                                               xaxis_title="FPR (False Positive Rate)",
-                                               yaxis_title="TPR (True Positive Rate)")
+                        fig_roc.add_trace(go.Scatter(
+                            x=fpr, y=tpr, fill="tozeroy",
+                            name=f"AUC={row['AUC-ROC']:.4f}",
+                            line=dict(color=DISCRETE_COLORS[0], width=2)
+                        ))
+                        fig_roc.add_trace(go.Scatter(
+                            x=[0, 1], y=[0, 1],
+                            line=dict(dash="dash", color=DISCRETE_COLORS[9]),
+                            name="Aleatorio"
+                        ))
+                        fig_roc.update_layout(
+                            title="Curva ROC",
+                            xaxis_title="FPR (False Positive Rate)",
+                            yaxis_title="TPR (True Positive Rate)",
+                            template=PLOTLY_TEMPLATE
+                        )
                         st.plotly_chart(fig_roc, use_container_width=True)
                     except Exception as e:
                         st.warning(f"No se pudo graficar ROC: {e}")
 
-            # Matriz de Confusión
             with col_cm:
                 cm = row["_confusion_matrix"]
                 if cm:
                     cm_arr = np.array(cm)
                     labels = ["Negativo", "Positivo"]
-                    fig_cm = px.imshow(cm_arr, text_auto=True,
-                                        x=labels, y=labels,
-                                        color_continuous_scale="Blues",
-                                        title="Matriz de Confusión",
-                                        labels=dict(x="Predicho", y="Real"))
+                    fig_cm = px.imshow(
+                        cm_arr, text_auto=True,
+                        x=labels, y=labels,
+                        color_continuous_scale=COLOR_SCALE_MAIN,
+                        title="Matriz de Confusión",
+                        labels=dict(x="Predicho", y="Real")
+                    )
+                    fig_cm.update_layout(template=PLOTLY_TEMPLATE)
                     st.plotly_chart(fig_cm, use_container_width=True)
 
-            # K-Fold scores
-            st.subheader("🔄 Scores por Fold (Cross-Validation)")
+            st.subheader("Scores por Fold (Cross-Validation)")
             cv_scores = row["CV Scores"]
             if cv_scores:
                 fold_df = pd.DataFrame({
                     "Fold": [f"Fold {i+1}" for i in range(len(cv_scores))],
                     "AUC-ROC": cv_scores,
                 })
-                fig_cv = px.bar(fold_df, x="Fold", y="AUC-ROC",
-                                 color="AUC-ROC", color_continuous_scale="RdYlGn",
-                                 title=f"K-Fold CV | Mean={row['CV Mean']:.4f} ± {row['CV Std']:.4f}")
-                fig_cv.add_hline(y=row["CV Mean"], line_dash="dash",
-                                  line_color="white", annotation_text="Media")
+                fig_cv = px.bar(
+                    fold_df, x="Fold", y="AUC-ROC",
+                    color="AUC-ROC", color_continuous_scale=COLOR_SCALE_MAIN,
+                    title=f"K-Fold CV | Mean={row['CV Mean']:.4f} ± {row['CV Std']:.4f}",
+                    template=PLOTLY_TEMPLATE
+                )
+                fig_cv.add_hline(
+                    y=row["CV Mean"],
+                    line_dash="dash",
+                    line_color="white",
+                    annotation_text="Media"
+                )
                 st.plotly_chart(fig_cv, use_container_width=True)
 
-            # Análisis de Threshold
-            st.subheader("⚖️ Análisis de Threshold")
+            st.subheader("Análisis de Threshold")
             y_prob = row["_y_prob"]
             if y_prob is not None:
                 thr_data = threshold_analysis(y_test, y_prob)
                 thr_df = pd.DataFrame(thr_data)
                 fig_thr = go.Figure()
-                for col_name in ["accuracy", "precision", "recall", "f1"]:
+                line_colors = [DISCRETE_COLORS[0], DISCRETE_COLORS[1], DISCRETE_COLORS[2], DISCRETE_COLORS[3]]
+                for i, col_name in enumerate(["accuracy", "precision", "recall", "f1"]):
                     fig_thr.add_trace(go.Scatter(
                         x=thr_df["threshold"], y=thr_df[col_name],
-                        name=col_name.capitalize(), mode="lines"
+                        name=col_name.capitalize(), mode="lines",
+                        line=dict(color=line_colors[i])
                     ))
-                fig_thr.update_layout(title="Métricas vs Threshold",
-                                       xaxis_title="Threshold",
-                                       yaxis_title="Score")
+                fig_thr.update_layout(
+                    title="Métricas vs Threshold",
+                    xaxis_title="Threshold",
+                    yaxis_title="Score",
+                    template=PLOTLY_TEMPLATE
+                )
                 st.plotly_chart(fig_thr, use_container_width=True)
 
-                # Threshold óptimo
                 opt = optimize_threshold(y_test, y_prob, metric="f1")
-                st.info(f"🎯 Threshold óptimo para F1: **{opt['optimal_threshold']}** "
-                        f"(F1={opt['best_score']:.4f})")
+                st.info(
+                    f"Threshold óptimo para F1: **{opt['optimal_threshold']}** "
+                    f"(F1={opt['best_score']:.4f})"
+                )
 
         elif pt == "regression":
             model_names = df["Model"].tolist()
@@ -655,9 +944,12 @@ with tab_detail:
                     "Fold": [f"Fold {i+1}" for i in range(len(cv_scores))],
                     "R²": cv_scores,
                 })
-                fig_cv = px.bar(fold_df, x="Fold", y="R²",
-                                 color="R²", color_continuous_scale="RdYlGn",
-                                 title=f"K-Fold CV | Mean={row['CV Mean (R²)']:.4f}")
+                fig_cv = px.bar(
+                    fold_df, x="Fold", y="R²",
+                    color="R²", color_continuous_scale=COLOR_SCALE_MAIN,
+                    title=f"K-Fold CV | Mean={row['CV Mean (R²)']:.4f}",
+                    template=PLOTLY_TEMPLATE
+                )
                 st.plotly_chart(fig_cv, use_container_width=True)
 
         elif pt == "timeseries":
@@ -671,41 +963,47 @@ with tab_detail:
             c3.metric("MSE", f"{row['MSE']:.4f}" if row["MSE"] else "N/A")
             c4.metric("MAPE", f"{row['MAPE (%)']:.2f}%" if row["MAPE (%)"] else "N/A")
 
-            if row["_predictions"]:
+            if row.get("_predictions") is not None and len(row["_predictions"]) > 0:
                 train = res["train"]
                 test = res["test"]
                 fig_f = go.Figure()
-                fig_f.add_trace(go.Scatter(y=list(train), name="Entrenamiento",
-                                            line=dict(color="#a8b2d8")))
                 fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train)+len(test))),
-                    y=list(test), name="Real", line=dict(color="#00b4d8", width=2)))
+                    y=list(train), name="Entrenamiento",
+                    line=dict(color=DISCRETE_COLORS[8])
+                ))
                 fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train)+len(test))),
+                    x=list(range(len(train), len(train) + len(test))),
+                    y=list(test), name="Real",
+                    line=dict(color=DISCRETE_COLORS[2], width=2)
+                ))
+                fig_f.add_trace(go.Scatter(
+                    x=list(range(len(train), len(train) + len(test))),
                     y=row["_predictions"], name="Predicción",
-                    line=dict(color="#e94560", dash="dash", width=2)))
-                fig_f.update_layout(title=f"Forecast: {sel}",
-                                     xaxis_title="Tiempo", yaxis_title="Valor")
+                    line=dict(color=DISCRETE_COLORS[0], dash="dash", width=2)
+                ))
+                fig_f.update_layout(
+                    title=f"Forecast: {sel}",
+                    xaxis_title="Tiempo",
+                    yaxis_title="Valor",
+                    template=PLOTLY_TEMPLATE
+                )
                 st.plotly_chart(fig_f, use_container_width=True)
-
 
 # ═════════════════════════════════════════════════════════════════════
 # TAB 5: MEJOR MODELO
 # ═════════════════════════════════════════════════════════════════════
 with tab_best:
-    st.header("🥇 Mejor Modelo")
+    st.header("Mejor Modelo")
 
     if not st.session_state.benchmark_run:
-        st.warning("⚠️ Ejecuta el benchmarking primero.")
+        st.warning("Ejecuta el benchmarking primero.")
     else:
         res = st.session_state.results
         df = res["results"]
         pt = res["problem_type"]
 
-        # Determinar mejor modelo
         best = df.iloc[0]
 
-        # Banner
         if pt == "classification":
             primary_metric = "AUC-ROC"
             primary_value = best["AUC-ROC"]
@@ -718,29 +1016,29 @@ with tab_best:
 
         st.markdown(f"""
         <div class="best-model-banner">
-            <h2>🏆 {best['Model']}</h2>
+            <h2>{best['Model']}</h2>
             <h3>{primary_metric}: {primary_value:.4f}</h3>
             <p>Mejor modelo según la métrica principal</p>
         </div>
         """, unsafe_allow_html=True)
 
-        # Detalles del ganador
-        st.subheader("📋 Métricas del Mejor Modelo")
+        st.subheader("Métricas del Mejor Modelo")
         display_cols = [c for c in df.columns if not c.startswith("_")]
         best_display = df[display_cols].iloc[0:1]
-        st.dataframe(best_display.style.format(
-            {c: "{:.4f}" for c in best_display.select_dtypes("float").columns}
-        ), use_container_width=True)
 
-        # Radar chart comparativo (clasificación)
+        st.dataframe(
+            style_color_table(best_display),
+            use_container_width=True
+        )
+
         if pt == "classification":
-            st.subheader("🕸️ Comparación Radar")
+
+            st.subheader("Comparación Radar")
             metrics_radar = ["Accuracy", "Precision", "Recall", "F1-Score", "AUC-ROC"]
             display_df = df[[c for c in df.columns if not c.startswith("_")]].copy()
             top_n = min(5, len(display_df))
 
             fig_radar = go.Figure()
-            colors_r = ["#e94560", "#06d6a0", "#ffd166", "#118ab2", "#9b5de5"]
             for i, row in display_df.head(top_n).iterrows():
                 values = [row[m] for m in metrics_radar]
                 values.append(values[0])
@@ -748,43 +1046,44 @@ with tab_best:
                     r=values,
                     theta=metrics_radar + [metrics_radar[0]],
                     name=row["Model"],
-                    line=dict(color=colors_r[i % len(colors_r)]),
+                    line=dict(color=DISCRETE_COLORS[i % len(DISCRETE_COLORS)]),
                 ))
-            fig_radar.update_layout(polar=dict(radialaxis=dict(range=[0.0, 1.0])),
-                                     title="Comparación Multimétrica (Top 5 Modelos)")
+            fig_radar.update_layout(
+                template=PLOTLY_TEMPLATE,
+                polar=dict(radialaxis=dict(range=[0.0, 1.0])),
+                title="Comparación Multimétrica (Top 5 Modelos)"
+            )
             st.plotly_chart(fig_radar, use_container_width=True)
 
-        # Recomendaciones
-        st.subheader("💡 Recomendaciones")
-        st.success(f"✅ Se recomienda usar **{best['Model']}** para este problema.")
+        st.subheader("Recomendaciones")
+        st.success(f"Se recomienda usar **{best['Model']}** para este problema.")
 
         if pt == "classification":
             if primary_value >= 0.95:
-                st.info("🌟 Rendimiento excelente. El modelo es altamente discriminativo.")
+                st.info("Rendimiento excelente. El modelo es altamente discriminativo.")
             elif primary_value >= 0.85:
-                st.info("👍 Buen rendimiento. Considera optimizar hiperparámetros para mejorar.")
+                st.info("Buen rendimiento. Considera optimizar hiperparámetros para mejorar.")
             else:
-                st.warning("⚠️ Rendimiento moderado. Considera más datos o feature engineering.")
+                st.warning("Rendimiento moderado. Considera más datos o feature engineering.")
 
         elif pt == "regression":
             if primary_value >= 0.85:
-                st.info("🌟 El modelo explica más del 85% de la varianza. Excelente ajuste.")
+                st.info("El modelo explica más del 85% de la varianza. Excelente ajuste.")
             elif primary_value >= 0.70:
-                st.info("👍 Buen ajuste. Prueba con más features o transformaciones.")
+                st.info("Buen ajuste. Prueba con más features o transformaciones.")
             else:
-                st.warning("⚠️ R² bajo. El modelo puede estar subajustando (underfitting).")
+                st.warning("R² bajo. El modelo puede estar subajustando (underfitting).")
 
         elif pt == "timeseries":
             mape = best.get("MAPE (%)")
             if mape and mape < 5:
-                st.info("🌟 MAPE < 5%: Forecasts muy precisos.")
+                st.info("MAPE < 5%: Forecasts muy precisos.")
             elif mape and mape < 10:
-                st.info("👍 MAPE < 10%: Forecasts aceptables.")
+                st.info("MAPE < 10%: Forecasts aceptables.")
             else:
-                st.warning("⚠️ MAPE alto. Considera más datos o ajustar períodos estacionales.")
+                st.warning("MAPE alto. Considera más datos o ajustar períodos estacionales.")
 
-        # Próximos pasos
-        st.subheader("🚀 Próximos Pasos Sugeridos")
+        st.subheader("Próximos Pasos Sugeridos")
         st.markdown("""
         1. **Optimización de hiperparámetros**: Usa Grid Search o Random Search con Optuna.
         2. **Interpretabilidad**: Analiza SHAP values y feature importance.

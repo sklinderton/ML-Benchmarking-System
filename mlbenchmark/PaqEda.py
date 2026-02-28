@@ -1,5 +1,3 @@
-#Paquete 1: Analisis de Datos Exploratorios (EDA)
-#PAQUETE OPTIMIZADO MINERIA DE DATOS AVANZADO 
 
 """
 CRISP-DM + OOP: PAQUETE EDA OPTIMIZADO con principios SOLID
