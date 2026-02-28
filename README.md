@@ -1,4 +1,4 @@
-# 🤖 ML Benchmarking System
+# ML Benchmarking System
 **BCD-7213 – Minería de Datos Avanzada · Universidad LEAD · I Cuatrimestre 2026**
 
 > Melany Ramírez · Jason Barrantes · Junior Ramírez  
