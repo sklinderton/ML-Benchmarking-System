@@ -1,147 +1,282 @@
 """
-streamlit_app.py - Aplicación Streamlit para Benchmarking de ML
+streamlit_app.py - ML Benchmarking System
 BCD-7213 Minería de Datos Avanzada - Universidad LEAD
-Estudiantes: Melany Ramirez, Jason Barrantes, Junior Ramirez
+Melany Ramírez · Jason Barrantes · Junior Ramírez
 """
 
 import os
 import sys
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-# Agregar el directorio padre al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mlbenchmark.benchmarking import run_benchmark
 from mlbenchmark.balancing import check_imbalance
 from mlbenchmark.metrics import roc_curve_data
 from mlbenchmark.threshold import optimize_threshold, threshold_analysis
+from mlbenchmark.eda import analisisEDA
+
+# ══════════════════════════════════════════════════════════════
+# CONSTANTES VISUALES
+# ══════════════════════════════════════════════════════════════
+TMPL  = "plotly_dark"
+C_MAIN = "Viridis"
+C_REV  = "Plasma"
+DISC   = ["#4E79A7","#F28E2B","#E15759","#76B7B2","#59A14F",
+          "#EDC948","#B07AA1","#FF9DA7","#9C755F","#BAB0AC"]
+
+# ══════════════════════════════════════════════════════════════
+# UTILIDADES GENERALES
+# ══════════════════════════════════════════════════════════════
+def safe_df(df):
+    """Sanitiza tipos mixtos; pasa Styler directamente."""
+    try:
+        from pandas.io.formats.style import Styler
+        if isinstance(df, Styler):
+            return df
+    except ImportError:
+        pass
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            try:
+                out[col] = pd.to_numeric(out[col])
+            except (ValueError, TypeError):
+                out[col] = out[col].astype(str)
+    return out
 
 
-# =========================
-# CONFIG VISUAL
-# =========================
-PLOTLY_TEMPLATE = "plotly_dark"
-COLOR_SCALE_MAIN = "Viridis"
-COLOR_SCALE_REVERSE = "Plasma"
-DISCRETE_COLORS = [
-    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
-    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC"
-]
+def show_df(df, **kwargs):
+    kwargs.setdefault("width", "stretch")
+    st.dataframe(safe_df(df), **kwargs)
 
 
-# =========================
-# HELPERS
-# =========================
-def style_color_table(df: pd.DataFrame):
+def fmt(v):
+    return f"{v:.4f}" if (v is not None and pd.notna(v)) else "N/A"
+
+
+def style_table(df):
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    styler = df.style
-
-    float_cols = df.select_dtypes(include=["float", "float64", "float32"]).columns.tolist()
+    float_cols = df.select_dtypes(include=["float"]).columns.tolist()
+    s = df.style
     if float_cols:
-        styler = styler.format({c: "{:.4f}" for c in float_cols})
-
+        s = s.format({c: "{:.4f}" for c in float_cols})
     if num_cols:
-        styler = styler.background_gradient(subset=num_cols, cmap="viridis")
-        styler = styler.set_properties(subset=num_cols, **{"color": "white"})
-
-    styler = styler.set_table_styles([
-        {
-            "selector": "th",
-            "props": [
-                ("background-color", "#1e1e1e"),
-                ("color", "#e0e0e0"),
-                ("border-color", "#333"),
-            ],
-        },
-        {
-            "selector": "td",
-            "props": [
-                ("border-color", "#333"),
-            ],
-        },
-    ])
-    return styler
+        s = s.background_gradient(subset=num_cols, cmap="viridis")
+        s = s.set_properties(subset=num_cols, **{"color": "white"})
+    return s
 
 
+# ══════════════════════════════════════════════════════════════
+# CONSTRUCCIÓN DE MODELOS CON HIPERPARÁMETROS
+# ══════════════════════════════════════════════════════════════
+def build_models_with_hyperparams(problem_type, selected_models, hp, rs=42):
+    """Construye modelos sklearn con los hiperparámetros dados por el usuario."""
+    from sklearn.linear_model import LogisticRegression, Ridge, Lasso
+    from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier,
+                                   RandomForestRegressor, GradientBoostingRegressor)
+    from sklearn.svm import SVC, SVR
+    from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+    from sklearn.naive_bayes import GaussianNB
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+    models = {}
+
+    if problem_type == "classification":
+        builders = {
+            "Logistic Regression": lambda h: LogisticRegression(
+                C=h.get("C", 1.0), max_iter=h.get("max_iter", 1000),
+                solver=h.get("solver", "lbfgs"), random_state=rs),
+            "Random Forest": lambda h: RandomForestClassifier(
+                n_estimators=h.get("n_estimators", 100),
+                max_depth=h.get("max_depth") or None,
+                min_samples_split=h.get("min_samples_split", 2),
+                max_features=h.get("max_features", "sqrt"), random_state=rs),
+            "Decision Tree": lambda h: DecisionTreeClassifier(
+                max_depth=h.get("max_depth") or None,
+                min_samples_split=h.get("min_samples_split", 2),
+                criterion=h.get("criterion", "gini"), random_state=rs),
+            "SVM": lambda h: SVC(
+                C=h.get("C", 1.0), kernel=h.get("kernel", "rbf"),
+                gamma=h.get("gamma", "scale"), probability=True, random_state=rs),
+            "K-Nearest Neighbors": lambda h: KNeighborsClassifier(
+                n_neighbors=h.get("n_neighbors", 5),
+                weights=h.get("weights", "uniform"),
+                metric=h.get("metric", "minkowski")),
+            "Naive Bayes": lambda h: GaussianNB(
+                var_smoothing=h.get("var_smoothing", 1e-9)),
+            "Gradient Boosting": lambda h: GradientBoostingClassifier(
+                n_estimators=h.get("n_estimators", 100),
+                learning_rate=h.get("learning_rate", 0.1),
+                max_depth=h.get("max_depth", 3), random_state=rs),
+        }
+        try:
+            from xgboost import XGBClassifier
+            builders["XGBoost"] = lambda h: XGBClassifier(
+                n_estimators=h.get("n_estimators", 100),
+                learning_rate=h.get("learning_rate", 0.1),
+                max_depth=h.get("max_depth", 6),
+                subsample=h.get("subsample", 1.0),
+                random_state=rs, eval_metric="logloss", verbosity=0)
+        except ImportError:
+            pass
+
+    elif problem_type == "regression":
+        builders = {
+            "Ridge Regression": lambda h: Ridge(alpha=h.get("alpha", 1.0)),
+            "Lasso Regression": lambda h: Lasso(
+                alpha=h.get("alpha", 1.0), max_iter=2000),
+            "Random Forest": lambda h: RandomForestRegressor(
+                n_estimators=h.get("n_estimators", 100),
+                max_depth=h.get("max_depth") or None,
+                min_samples_split=h.get("min_samples_split", 2), random_state=rs),
+            "Decision Tree": lambda h: DecisionTreeRegressor(
+                max_depth=h.get("max_depth") or None,
+                min_samples_split=h.get("min_samples_split", 2), random_state=rs),
+            "SVR": lambda h: SVR(
+                C=h.get("C", 1.0), kernel=h.get("kernel", "rbf"),
+                gamma=h.get("gamma", "scale")),
+            "K-Nearest Neighbors": lambda h: KNeighborsRegressor(
+                n_neighbors=h.get("n_neighbors", 5),
+                weights=h.get("weights", "uniform")),
+            "Gradient Boosting": lambda h: GradientBoostingRegressor(
+                n_estimators=h.get("n_estimators", 100),
+                learning_rate=h.get("learning_rate", 0.1),
+                max_depth=h.get("max_depth", 3), random_state=rs),
+        }
+        try:
+            from xgboost import XGBRegressor
+            builders["XGBoost"] = lambda h: XGBRegressor(
+                n_estimators=h.get("n_estimators", 100),
+                learning_rate=h.get("learning_rate", 0.1),
+                max_depth=h.get("max_depth", 6), random_state=rs, verbosity=0)
+        except ImportError:
+            pass
+    else:
+        return {}
+
+    for name in selected_models:
+        if name in builders:
+            models[name] = builders[name](hp.get(name, {}))
+    return models
+
+
+def build_ts_models_with_hyperparams(selected_models, hp, seasonal_periods):
+    """Construye modelos de series de tiempo con hiperparámetros del usuario."""
+    from mlbenchmark.models_timeseries import (
+        HoltWintersModel, HoltWintersCalibrated,
+        ARIMAModel, ARIMACalibrated, LSTMModel)
+    ws_default = min(12, seasonal_periods)
+    builders = {
+        "Holt-Winters": lambda h: HoltWintersModel(
+            seasonal_periods=seasonal_periods,
+            trend=h.get("trend", "add"),
+            seasonal=h.get("seasonal", "add")),
+        "Holt-Winters Calibrado": lambda h: HoltWintersCalibrated(
+            seasonal_periods=seasonal_periods),
+        "ARIMA(1,1,1)": lambda h: ARIMAModel(
+            order=(h.get("p", 1), h.get("d", 1), h.get("q", 1))),
+        "ARIMA Calibrado": lambda h: ARIMACalibrated(
+            max_p=h.get("max_p", 2),
+            max_d=h.get("max_d", 2),
+            max_q=h.get("max_q", 2)),
+        "LSTM": lambda h: LSTMModel(
+            units=h.get("units", 50),
+            layers=h.get("layers", 2),
+            epochs=h.get("epochs", 30),
+            window_size=h.get("window_size", ws_default),
+            dropout=h.get("dropout", 0.2),
+            scale=False),
+    }
+    models = {}
+    for name in selected_models:
+        if name in builders:
+            models[name] = builders[name](hp.get(name, {}))
+    return models
+
+
+# ══════════════════════════════════════════════════════════════
+# CARGA DE DATASETS
+# ══════════════════════════════════════════════════════════════
 @st.cache_data
-def load_dataset(name, problem_type):
-    """Carga datasets predefinidos."""
+def load_predefined_dataset(name, problem_type):
+    """Carga datasets predefinidos. Retorna DataFrame completo + nombre de target."""
     from sklearn.datasets import fetch_california_housing, load_breast_cancer
 
     if problem_type == "Clasificación":
         if name == "Breast Cancer Wisconsin":
-            data = load_breast_cancer()
-            X = pd.DataFrame(data.data, columns=data.feature_names)
-            y = pd.Series(data.target, name="target")
-            return X, y, data.feature_names.tolist()
+            d = load_breast_cancer()
+            df = pd.DataFrame(d.data, columns=d.feature_names)
+            df["target"] = d.target
+            return df, "target"
 
         if name == "Credit Card Fraud (Simulado)":
             rng = np.random.RandomState(42)
-            n = 10000
-            n_fraud = 200
-            X_normal = rng.randn(n - n_fraud, 20)
-            X_fraud = rng.randn(n_fraud, 20) + 2.5
-            X = np.vstack([X_normal, X_fraud])
-            y = np.array([0] * (n - n_fraud) + [1] * n_fraud)
-            cols = [f"feature_{i}" for i in range(20)]
+            n, nf = 10000, 200
+            X = np.vstack([rng.randn(n-nf, 20), rng.randn(nf, 20)+2.5])
+            y = np.array([0]*(n-nf)+[1]*nf)
             idx = rng.permutation(n)
-            return pd.DataFrame(X[idx], columns=cols), pd.Series(y[idx], name="fraud"), cols
+            cols = [f"feature_{i}" for i in range(20)]
+            df = pd.DataFrame(X[idx], columns=cols)
+            df["fraud"] = y[idx]
+            return df, "fraud"
 
     elif problem_type == "Regresión":
         if name == "California Housing":
-            data = fetch_california_housing()
-            X = pd.DataFrame(data.data, columns=data.feature_names)
-            y = pd.Series(data.target, name="price")
-            return X, y, data.feature_names.tolist()
+            d = fetch_california_housing()
+            df = pd.DataFrame(d.data, columns=d.feature_names)
+            df["price"] = d.target
+            return df, "price"
 
     elif problem_type == "Series de Tiempo":
         if name == "Airline Passengers":
-            url = "https://raw.githubusercontent.com/jbrownlee/Datasets/master/airline-passengers.csv"
-            try:
-                df = pd.read_csv(url, header=0, index_col=0, parse_dates=True).squeeze("columns")
-            except Exception:
-                passengers = [
-                    112,118,132,129,121,135,148,148,136,119,104,118,
-                    115,126,141,135,125,149,170,170,158,133,114,140,
-                    145,150,178,163,172,178,199,199,184,162,146,166,
-                    171,180,193,181,183,218,230,242,209,191,172,194,
-                    196,196,236,235,229,243,264,272,237,211,180,201,
-                    204,188,235,227,234,264,302,293,259,229,203,229,
-                    242,233,267,269,270,315,364,347,312,274,237,278,
-                    284,277,317,313,318,374,413,405,355,306,271,306,
-                    315,301,356,348,355,422,465,467,404,347,305,336,
-                    340,318,362,348,363,435,491,505,404,359,310,337,
-                    360,342,406,396,420,472,548,559,463,407,362,405,
-                    417,391,419,461,472,535,622,606,508,461,390,432,
-                ]
-                df = pd.Series(passengers, name="passengers")
-            return df
+            p = [112,118,132,129,121,135,148,148,136,119,104,118,
+                 115,126,141,135,125,149,170,170,158,133,114,140,
+                 145,150,178,163,172,178,199,199,184,162,146,166,
+                 171,180,193,181,183,218,230,242,209,191,172,194,
+                 196,196,236,235,229,243,264,272,237,211,180,201,
+                 204,188,235,227,234,264,302,293,259,229,203,229,
+                 242,233,267,269,270,315,364,347,312,274,237,278,
+                 284,277,317,313,318,374,413,405,355,306,271,306,
+                 315,301,356,348,355,422,465,467,404,347,305,336,
+                 340,318,362,348,363,435,491,505,404,359,310,337,
+                 360,342,406,396,420,472,548,559,463,407,362,405,
+                 417,391,419,461,472,535,622,606,508,461,390,432]
+            return pd.Series(p, name="passengers"), None
 
-    return None
+    return None, None
 
 
-def read_uploaded_table(uploaded_file) -> pd.DataFrame:
-    """Lee un archivo subido (csv/xlsx/json) en un DataFrame."""
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    if name.endswith(".json"):
-        return pd.read_json(uploaded_file)
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        return pd.read_excel(uploaded_file)
-    raise ValueError("Formato no soportado. Usa CSV, Excel o JSON.")
+def parse_uploaded_file(f, sep=",", decimal=".", use_idx=False):
+    name = f.name.lower()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(f, sep=sep, decimal=decimal,
+                             index_col=0 if use_idx else False)
+        elif name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(f, index_col=0 if use_idx else False)
+        elif name.endswith(".json"):
+            df = pd.read_json(f)
+        else:
+            return None, "Formato no soportado. Usa CSV, Excel o JSON."
+        df.columns = [str(c).strip() for c in df.columns]
+        return df, None
+    except Exception as e:
+        return None, str(e)
 
 
-# =========================
-# PAGE CONFIG
-# =========================
+# ══════════════════════════════════════════════════════════════
+# PAGE CONFIG + CSS
+# ══════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="ML Benchmarking System - Junior Ramirez, Jason Barrantes, Melany Ramirez",
+    page_title="ML Benchmarking System - BCD-7213 LEAD",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -149,1047 +284,1032 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;700&display=swap');
-
-    html, body, [class*="css"], [class*="st-"], .stApp, .stApp * {
-        font-family: 'Poppins', sans-serif !important;
-    }
-
-    .stApp {
-        background: #121212;
-        color: #e0e0e0;
-    }
-
-    section[data-testid="stSidebar"] {
-        background: #1e1e1e;
-        border-right: 1px solid #333;
-    }
-    section[data-testid="stSidebar"] * {
-        color: #e0e0e0;
-    }
-    section[data-testid="stSidebar"] hr {
-        border-color: #333;
-    }
-
-    h1, h2, h3, h4, h5, h6 {
-        color: #e0e0e0;
-        font-weight: 700;
-        letter-spacing: 0.2px;
-    }
-    p, li, span, label, div {
-        color: #d6d6d6;
-    }
-
-    .main-header {
-        background: linear-gradient(135deg, #121212 0%, #202020 50%, #1a1a1a 100%);
-        padding: 2rem;
-        border-radius: 12px;
-        text-align: center;
-        margin-bottom: 2rem;
-        border: 1px solid #333;
-        box-shadow: 0 8px 18px rgba(0,0,0,0.35);
-    }
-    .main-header h1 {
-        color: #e0e0e0;
-        font-size: 2.2rem;
-        margin: 0;
-    }
-    .main-header p {
-        color: #bdbdbd;
-        margin: 0.5rem 0 0 0;
-    }
-
-    .best-model-banner {
-        background: linear-gradient(135deg, #1e1e1e 0%, #333 60%, #2a2a2a 100%);
-        padding: 1.5rem;
-        border-radius: 12px;
-        color: #e0e0e0;
-        text-align: center;
-        margin-bottom: 1rem;
-        border: 1px solid #444;
-        box-shadow: 0 10px 22px rgba(0,0,0,0.35);
-    }
-    .best-model-banner h2, .best-model-banner h3, .best-model-banner p {
-        color: #e0e0e0;
-        margin: 0.25rem 0;
-    }
-
-    .stTextInput input, .stNumberInput input, .stSelectbox select, .stMultiSelect div, .stTextArea textarea {
-        background: #1e1e1e !important;
-        color: #e0e0e0 !important;
-        border: 1px solid #444 !important;
-        border-radius: 10px !important;
-    }
-    div[data-baseweb="select"] > div {
-        background: #1e1e1e !important;
-        border: 1px solid #444 !important;
-        border-radius: 10px !important;
-        color: #e0e0e0 !important;
-    }
-    .stSlider [data-baseweb="slider"] * {
-        color: #e0e0e0 !important;
-    }
-
-    .stButton button {
-        background: #333 !important;
-        color: #e0e0e0 !important;
-        border: 1px solid #555 !important;
-        border-radius: 12px !important;
-        font-weight: 600 !important;
-        padding: 0.55rem 0.9rem !important;
-    }
-    .stButton button:hover {
-        background: #3a3a3a !important;
-        border-color: #777 !important;
-    }
-
-    div[data-testid="stDataFrame"] {
-        background: #1e1e1e;
-        border: 1px solid #333;
-        border-radius: 12px;
-        padding: 0.25rem;
-        overflow: hidden;
-    }
-
-    .stAlert {
-        border-radius: 10px;
-        border: 1px solid #444;
-        background: #1e1e1e;
-        color: #e0e0e0;
-    }
-
-    hr {
-        border-color: #333 !important;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;700&display=swap');
+html,body,[class*="css"],[class*="st-"],.stApp,.stApp*{font-family:'Poppins',sans-serif!important}
+.stApp{background:#121212;color:#e0e0e0}
+section[data-testid="stSidebar"]{background:#1e1e1e;border-right:1px solid #333}
+section[data-testid="stSidebar"] *{color:#e0e0e0}
+section[data-testid="stSidebar"] hr{border-color:#333}
+h1,h2,h3,h4,h5,h6{color:#e0e0e0;font-weight:700}
+p,li,span,label,div{color:#d6d6d6}
+.main-header{background:linear-gradient(135deg,#121212 0%,#202020 50%,#1a1a1a 100%);
+  padding:2rem;border-radius:12px;text-align:center;margin-bottom:2rem;
+  border:1px solid #333;box-shadow:0 8px 18px rgba(0,0,0,.35)}
+.main-header h1{color:#e0e0e0;font-size:2.2rem;margin:0}
+.main-header p{color:#bdbdbd;margin:.5rem 0 0 0}
+.best-model-banner{background:linear-gradient(135deg,#1e1e1e 0%,#333 60%,#2a2a2a 100%);
+  padding:1.5rem;border-radius:12px;color:#e0e0e0;text-align:center;margin-bottom:1rem;
+  border:1px solid #444;box-shadow:0 10px 22px rgba(0,0,0,.35)}
+.best-model-banner h2,.best-model-banner h3,.best-model-banner p{color:#e0e0e0;margin:.25rem 0}
+.stButton button{background:#333!important;color:#e0e0e0!important;border:1px solid #555!important;
+  border-radius:12px!important;font-weight:600!important;padding:.55rem .9rem!important}
+.stButton button:hover{background:#3a3a3a!important;border-color:#777!important}
+div[data-testid="stDataFrame"]{background:#1e1e1e;border:1px solid #333;border-radius:12px;
+  padding:.25rem;overflow:hidden}
+hr{border-color:#333!important}
 </style>
 """, unsafe_allow_html=True)
 
-# ─── Encabezado ───────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-header">
     <h1>🤖 ML Benchmarking System</h1>
     <p>BCD-7213 Minería de Datos Avanzada · Universidad LEAD · I Cuatrimestre 2026</p>
-    <p style="color:#e94560; font-size:0.85rem;">Melany Ramírez · Jason Barrantes · Junior Ramírez</p>
+    <p style="color:#e94560;font-size:.85rem;">Melany Ramírez · Jason Barrantes · Junior Ramírez</p>
 </div>
 """, unsafe_allow_html=True)
-# =========================
+
+
+# ══════════════════════════════════════════════════════════════
 # SIDEBAR
-# =========================
+# ══════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.title("Configuración")
+    st.title("⚙️ Configuración")
     st.divider()
 
     problem_type = st.selectbox(
-        "Tipo de Problema",
+        "🎯 Tipo de Problema",
         ["Clasificación", "Regresión", "Series de Tiempo"],
-        help="Selecciona el tipo de problema de Machine Learning",
-        key="sidebar_problem_type",
+        key="sb_problem_type",
     )
 
-    st.subheader("Dataset")
+    st.subheader("📂 Fuente de Datos")
     dataset_options = {
-        "Clasificación": ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)", "Archivo (CSV/Excel/JSON)"],
-        "Regresión": ["California Housing", "Archivo (CSV/Excel/JSON)"],
-        "Series de Tiempo": ["Airline Passengers", "Archivo (CSV/Excel/JSON)"],
+        "Clasificación":    ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)", "📤 Subir archivo"],
+        "Regresión":        ["California Housing", "📤 Subir archivo"],
+        "Series de Tiempo": ["Airline Passengers", "📤 Subir archivo"],
     }
-    selected_dataset = st.selectbox(
-        "Dataset",
-        dataset_options[problem_type],
-        key="sidebar_dataset",
-    )
+    selected_dataset = st.selectbox("Dataset", dataset_options[problem_type], key="sb_dataset")
 
     uploaded_file = None
-    if selected_dataset == "Archivo (CSV/Excel/JSON)":
-        uploaded_file = st.file_uploader(
-            "Sube tu dataset",
-            type=["csv", "xlsx", "xls", "json"],
-            accept_multiple_files=False,
-            key="sidebar_file_uploader",
-        )
+    csv_opts = {"sep": ",", "decimal": ".", "idx": False}
+    if selected_dataset == "📤 Subir archivo":
+        uploaded_file = st.file_uploader("Archivo CSV / Excel / JSON",
+                                          type=["csv","xlsx","xls","json"],
+                                          key="sb_uploader")
+        if uploaded_file:
+            with st.expander("⚙️ Opciones de parseo"):
+                sep_raw = st.selectbox("Separador", [",",";","\\t","|"])
+                decimal  = st.selectbox("Decimal", [".",","])
+                use_idx  = st.checkbox("Primera col. como índice", False)
+            sep_val = "\t" if sep_raw == "\\t" else sep_raw
+            csv_opts = {"sep": sep_val, "decimal": decimal, "idx": use_idx}
 
     st.divider()
 
-    threshold = 0.5
-    balancing = "none"
-    train_ratio = 0.8
-    seasonal_periods = 12
+    threshold = 0.5; balancing = "none"; train_ratio = 0.8; seasonal_periods = 12
+    test_size = 0.3; cv_folds = 5; scale_features_flag = True
 
-    if problem_type in ["Clasificación", "Regresión"]:
-        st.subheader("Parámetros del Experimento")
-        test_size = st.slider(
-            "Tamaño del Test Set (%)",
-            10,
-            50,
-            30,
-            5,
-            key="sidebar_test_size_slider",
-        ) / 100
-
-        cv_folds = st.slider(
-            "Número de Folds (K-Fold)",
-            3,
-            10,
-            5,
-            key="sidebar_cv_folds_slider",
-        )
-
-        scale_features_flag = st.checkbox(
-            "Escalar Features (StandardScaler)",
-            value=True,
-            key="sidebar_scale_features_checkbox",
-        )
-
+    if problem_type != "Series de Tiempo":
+        st.subheader("🔧 Parámetros")
+        test_size           = st.slider("Test Set (%)", 10, 50, 30, 5, key="sb_test") / 100
+        cv_folds            = st.slider("K-Folds", 3, 10, 5, key="sb_folds")
+        scale_features_flag = st.checkbox("Escalar Features", True, key="sb_scale")
         if problem_type == "Clasificación":
             st.divider()
-            st.subheader("Clasificación")
-
-            threshold = st.slider(
-                "Threshold de Decisión",
-                0.1,
-                0.9,
-                0.5,
-                0.05,
-                key="sidebar_threshold_slider",
-            )
-
-            balancing = st.selectbox(
-                "Técnica de Balanceo",
-                ["none", "smote", "undersample", "combined"],
-                format_func=lambda x: {
-                    "none": "Sin balanceo",
-                    "smote": "SMOTE",
-                    "undersample": "Under-sampling",
-                    "combined": "Híbrido (SMOTE + Under)",
-                }[x],
-                key="sidebar_balancing_selectbox",
-            )
+            threshold = st.slider("Threshold", 0.1, 0.9, 0.5, 0.05, key="sb_thr")
+            balancing = st.selectbox("Balanceo",
+                ["none","smote","undersample","combined"],
+                format_func=lambda x: {"none":"Sin balanceo","smote":"SMOTE",
+                    "undersample":"Under-sampling","combined":"Híbrido"}[x],
+                key="sb_bal")
     else:
-        scale_features_flag = True
-        st.subheader("Series de Tiempo")
-        train_ratio = st.slider(
-            "Ratio de Entrenamiento (%)",
-            60,
-            90,
-            80,
-            5,
-            key="sidebar_train_ratio_slider",
-        ) / 100
-
-        seasonal_periods = st.selectbox(
-            "Períodos Estacionales",
-            [4, 12, 24, 52],
-            index=1,
-            key="sidebar_seasonal_periods_selectbox",
-        )
+        st.subheader("📈 Series de Tiempo")
+        train_ratio      = st.slider("Train Ratio (%)", 60, 90, 80, 5, key="sb_tr") / 100
+        seasonal_periods = st.selectbox("Períodos Estacionales", [4,12,24,52], index=1, key="sb_sp")
 
     st.divider()
-    st.caption("Configura los parámetros y carga el dataset para comenzar.")
+    st.caption("Configura y presiona **Cargar Dataset** para comenzar.")
 
 
-# =========================
+# ══════════════════════════════════════════════════════════════
 # SESSION STATE
-# =========================
-if "data_loaded" not in st.session_state:
-    st.session_state.data_loaded = False
-if "benchmark_run" not in st.session_state:
-    st.session_state.benchmark_run = False
-if "results" not in st.session_state:
-    st.session_state.results = None
-if "uploaded_df" not in st.session_state:
-    st.session_state.uploaded_df = None
+# ══════════════════════════════════════════════════════════════
+_defaults = {
+    "data_loaded": False, "benchmark_run": False,
+    "results": None, "working_df": None, "target_col": None,
+    "series": None, "hyperparams": {}, "selected_models": [],
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
-# =========================
+# ══════════════════════════════════════════════════════════════
 # TABS
-# =========================
+# ══════════════════════════════════════════════════════════════
 tab_explore, tab_config, tab_bench, tab_detail, tab_best = st.tabs([
-    "Exploración de Datos",
-    "Configuración del Experimento",
-    "Benchmarking de Modelos",
-    "Resultados Detallados",
-    "Mejor Modelo",
+    "🔍 Exploración & EDA",
+    "⚙️ Configuración de Modelos",
+    "🏆 Benchmarking",
+    "📈 Resultados Detallados",
+    "🥇 Mejor Modelo",
 ])
 
 
-# =========================
-# TAB 1: EXPLORACIÓN
-# =========================
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 1 · EXPLORACIÓN & EDA                              ║
+# ╚══════════════════════════════════════════════════════════╝
 with tab_explore:
-    st.header("Exploración del Dataset")
+    st.header("🔍 Exploración, Limpieza y Análisis de Datos")
 
-    col_load, col_info = st.columns([1, 3])
+    # ── Botón Cargar ─────────────────────────────────────────
+    if st.button("📥 Cargar Dataset", type="primary", use_container_width=True, key="btn_load"):
+        with st.spinner("Cargando..."):
+            err = None
 
-    with col_load:
-        if st.button("Cargar Dataset", type="primary", use_container_width=True, key="btn_load_dataset"):
-            with st.spinner(f"Cargando {selected_dataset}..."):
-                try:
-                    if selected_dataset == "Archivo (CSV/Excel/JSON)":
-                        if uploaded_file is None:
-                            st.error("Sube un archivo primero.")
-                            st.stop()
-
-                        dfu = read_uploaded_table(uploaded_file)
-                        dfu.columns = [str(c).strip() for c in dfu.columns]
-                        st.session_state.uploaded_df = dfu
-                        st.session_state.data_loaded = True
-                        st.session_state.benchmark_run = False
-                        st.session_state.results = None
-                        st.success("Archivo cargado. Configura las columnas abajo.")
-                        st.stop()
-
-                    if problem_type != "Series de Tiempo":
-                        X, y, feature_names = load_dataset(selected_dataset, problem_type)
-                        st.session_state.X = X
-                        st.session_state.y = y
-                        st.session_state.feature_names = feature_names
-                    else:
-                        series = load_dataset(selected_dataset, problem_type)
-                        st.session_state.series = series
-
-                    st.session_state.data_loaded = True
-                    st.session_state.benchmark_run = False
-                    st.session_state.results = None
-                    st.success("Dataset cargado.")
-                except Exception as e:
-                    st.error(f"Error cargando datos: {e}")
-
-    if st.session_state.data_loaded:
-        if selected_dataset == "Archivo (CSV/Excel/JSON)" and st.session_state.uploaded_df is not None:
-            dfu = st.session_state.uploaded_df
-
-            st.subheader("Configurar dataset (archivo)")
-
-            if problem_type in ["Clasificación", "Regresión"]:
-                target_col = st.selectbox(
-                    "Columna target",
-                    dfu.columns.tolist(),
-                    key="explore_target_col_selectbox",
-                )
-
-                X_raw = dfu.drop(columns=[target_col]).copy()
-                y_raw = dfu[target_col].copy()
-                X_enc = pd.get_dummies(X_raw, drop_first=False)
-
-                if problem_type == "Regresión":
-                    y_num = pd.to_numeric(y_raw, errors="coerce")
-                    if y_num.isna().any():
-                        st.error("La columna target para regresión debe ser numérica.")
-                        st.stop()
-                    y_final = pd.Series(y_num.values, name=str(target_col))
+            if selected_dataset == "📤 Subir archivo":
+                if uploaded_file is None:
+                    err = "No has subido ningún archivo."
                 else:
-                    if y_raw.dtype == "object" or str(y_raw.dtype).startswith("category"):
-                        y_codes, _ = pd.factorize(y_raw.astype(str))
-                        y_final = pd.Series(y_codes, name=str(target_col))
+                    df_raw, parse_err = parse_uploaded_file(
+                        uploaded_file, csv_opts["sep"], csv_opts["decimal"], csv_opts["idx"])
+                    if parse_err:
+                        err = parse_err
                     else:
-                        y_final = pd.Series(y_raw.values, name=str(target_col))
-
-                st.session_state.X = X_enc
-                st.session_state.y = y_final
-                st.session_state.feature_names = X_enc.columns.tolist()
-                st.success("Dataset listo para benchmarking.")
-
+                        if problem_type == "Series de Tiempo":
+                            num_cols = df_raw.select_dtypes(include="number").columns
+                            if not len(num_cols):
+                                err = "No hay columnas numéricas en el archivo."
+                            else:
+                                st.session_state.series = df_raw[num_cols[0]].dropna().values.astype(float)
+                                st.session_state.working_df = None
+                        else:
+                            st.session_state.working_df = df_raw
+                            # Target = última columna por defecto
+                            st.session_state.target_col = df_raw.columns[-1]
+                            st.session_state.series = None
             else:
-                date_col = st.selectbox(
-                    "Columna de fecha",
-                    dfu.columns.tolist(),
-                    key="explore_date_col_selectbox",
-                )
-                value_options = [c for c in dfu.columns if c != date_col]
-                value_col = st.selectbox(
-                    "Columna de valor",
-                    value_options,
-                    key="explore_value_col_selectbox",
-                )
+                result = load_predefined_dataset(selected_dataset, problem_type)
+                df_or_series, target = result
+                if problem_type == "Series de Tiempo":
+                    st.session_state.series = df_or_series.values.astype(float)
+                    st.session_state.working_df = None
+                else:
+                    st.session_state.working_df = df_or_series
+                    st.session_state.target_col = target
+                    st.session_state.series = None
 
-                df_ts = dfu[[date_col, value_col]].copy()
-                df_ts[date_col] = pd.to_datetime(df_ts[date_col], errors="coerce")
-                df_ts = df_ts.dropna(subset=[date_col])
-                df_ts = df_ts.sort_values(date_col)
-
-                series = pd.Series(df_ts[value_col].values, index=df_ts[date_col].values, name=str(value_col))
-                st.session_state.series = series
-                st.success("Serie temporal lista para benchmarking.")
-
-        if problem_type != "Series de Tiempo":
-            X = st.session_state.X
-            y = st.session_state.y
-
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Muestras", f"{len(X):,}")
-            col2.metric("Features", len(X.columns))
-            col3.metric("Target", y.name)
-
-            if problem_type == "Clasificación":
-                imb = check_imbalance(y.values)
-                col4.metric("Ratio de Clases", f"{imb['ratio']:.3f}")
-
-                st.subheader("Distribución de Clases")
-                c1, c2 = st.columns(2)
-
-                with c1:
-                    class_df = pd.DataFrame({
-                        "Clase": imb["classes"],
-                        "Conteo": imb["counts"],
-                    })
-                    fig_bar = px.bar(
-                        class_df,
-                        x="Clase",
-                        y="Conteo",
-                        color="Conteo",
-                        color_continuous_scale=COLOR_SCALE_MAIN,
-                        title="Conteo por Clase",
-                        template=PLOTLY_TEMPLATE,
-                    )
-                    st.plotly_chart(fig_bar, use_container_width=True)
-
-                with c2:
-                    fig_pie = px.pie(
-                        class_df,
-                        values="Conteo",
-                        names="Clase",
-                        title="Proporción de Clases",
-                        color_discrete_sequence=DISCRETE_COLORS,
-                        template=PLOTLY_TEMPLATE,
-                    )
-                    st.plotly_chart(fig_pie, use_container_width=True)
-
-                if imb["is_imbalanced"]:
-                    st.warning(
-                        f"Dataset desbalanceado (ratio={imb['ratio']:.3f}). "
-                        f"Severidad: **{imb['severity']}**. Considera usar SMOTE o under-sampling."
-                    )
-
-            st.subheader("Estadísticas Descriptivas")
-            st.dataframe(X.describe().round(3), use_container_width=True)
-
-            if len(X.columns) <= 30:
-                st.subheader("Mapa de Correlación")
-                corr = X.corr(numeric_only=True)
-                fig_corr = px.imshow(
-                    corr,
-                    color_continuous_scale=COLOR_SCALE_MAIN,
-                    title="Matriz de Correlación",
-                    aspect="auto",
-                )
-                fig_corr.update_layout(template=PLOTLY_TEMPLATE)
-                st.plotly_chart(fig_corr, use_container_width=True)
-
-        else:
-            series = st.session_state.series
-            st.metric("Observaciones", len(series))
-
-            fig_ts = px.line(
-                y=series.values if hasattr(series, "values") else series,
-                title=f"Serie Temporal: {selected_dataset}",
-                labels={"index": "Tiempo", "y": "Valor"},
-                template=PLOTLY_TEMPLATE,
-            )
-            fig_ts.update_traces(line_color=DISCRETE_COLORS[0])
-            st.plotly_chart(fig_ts, use_container_width=True)
-
-    else:
-        st.info("Presiona Cargar Dataset para comenzar la exploración.")
-
-
-# =========================
-# TAB 2: CONFIG
-# =========================
-with tab_config:
-    st.header("Configuración del Experimento")
-
-    st.info(
-        "Los parámetros principales se configuran en el panel lateral izquierdo. "
-        "Aquí puedes ver y seleccionar los modelos a evaluar."
-    )
-
-    if problem_type in ["Clasificación", "Regresión"]:
-        st.subheader("Modelos Disponibles")
-
-        if problem_type == "Clasificación":
-            all_models = [
-                "Logistic Regression", "Random Forest", "Decision Tree",
-                "SVM", "K-Nearest Neighbors", "Naive Bayes", "Gradient Boosting"
-            ]
-        else:
-            all_models = [
-                "Ridge Regression", "Lasso Regression", "Random Forest",
-                "Decision Tree", "SVR", "K-Nearest Neighbors", "Gradient Boosting"
-            ]
-
-        selected_models = st.multiselect(
-            "Selecciona modelos a comparar:",
-            all_models,
-            default=all_models,
-            key="config_models_multiselect",
-        )
-        st.session_state.selected_models = selected_models
-
-    else:
-        st.subheader("Modelos de Series de Tiempo")
-        ts_models = [
-            "Holt-Winters",
-            "Holt-Winters Calibrado",
-            "ARIMA(1,1,1)",
-            "ARIMA Calibrado",
-            "LSTM",
-        ]
-        sel_ts = st.multiselect(
-            "Modelos:",
-            ts_models,
-            default=ts_models[:4],
-            key="config_ts_models_multiselect",
-        )
-        st.session_state.selected_ts_models = sel_ts
-
-    st.divider()
-    st.subheader("Resumen de Configuración")
-
-    config_data = {"Parámetro": [], "Valor": []}
-    config_data["Parámetro"].append("Tipo de Problema")
-    config_data["Valor"].append(problem_type)
-    config_data["Parámetro"].append("Dataset")
-    config_data["Valor"].append(selected_dataset)
-
-    if problem_type != "Series de Tiempo":
-        config_data["Parámetro"].extend(["Test Size", "K-Folds", "Escalar Features"])
-        config_data["Valor"].extend([
-            f"{int(test_size * 100)}%",
-            cv_folds,
-            scale_features_flag,
-        ])
-
-        if problem_type == "Clasificación":
-            config_data["Parámetro"].extend(["Threshold", "Balanceo"])
-            config_data["Valor"].extend([threshold, balancing])
-
-    else:
-        config_data["Parámetro"].extend(["Train Ratio", "Períodos Estacionales"])
-        config_data["Valor"].extend([
-            f"{int(train_ratio * 100)}%",
-            seasonal_periods,
-        ])
-
-    config_df = pd.DataFrame(config_data)
-    config_df["Valor"] = config_df["Valor"].astype(str)
-    st.dataframe(config_df, use_container_width=True)
-
-
-# =========================
-# TAB 3: BENCHMARKING
-# =========================
-with tab_bench:
-    st.header("Benchmarking de Modelos")
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                st.session_state.data_loaded  = True
+                st.session_state.benchmark_run = False
+                st.session_state.results = None
+                st.success("✅ Dataset cargado correctamente.")
 
     if not st.session_state.data_loaded:
-        st.warning("Primero carga el dataset en la pestaña Exploración de Datos.")
+        st.info("👈 Selecciona la fuente de datos y presiona **Cargar Dataset**.")
+        if selected_dataset == "📤 Subir archivo":
+            st.markdown("""
+            **Instrucciones para archivos propios:**
+            - **Clasificación / Regresión:** columnas de features + **target en la última columna**
+              (o selecciónala tras cargar).
+            - **Series de Tiempo:** una sola columna numérica con los valores de la serie.
+            - Formatos: `.csv` · `.xlsx` · `.xls` · `.json`
+            """)
+        st.stop()
+
+    # ──────────────────────────────────────────────────────────
+    # SERIE DE TIEMPO
+    # ──────────────────────────────────────────────────────────
+    if problem_type == "Series de Tiempo":
+        series = st.session_state.series
+        st.metric("📅 Observaciones", len(series))
+
+        col_s1, col_s2, col_s3 = st.columns(3)
+        col_s1.metric("Media",  f"{np.mean(series):.2f}")
+        col_s2.metric("Mín",    f"{np.min(series):.2f}")
+        col_s3.metric("Máx",    f"{np.max(series):.2f}")
+
+        fig_ts = px.line(y=series, title="Serie Temporal",
+                         labels={"index":"Tiempo","y":"Valor"}, template=TMPL)
+        fig_ts.update_traces(line_color=DISC[0])
+        st.plotly_chart(fig_ts, width="stretch")
+
+        # Estadísticas básicas
+        with st.expander("📋 Estadísticas Descriptivas"):
+            ts_stats = pd.DataFrame({
+                "Métrica": ["N","Media","Mediana","Desv. Std","Mínimo","Máximo",
+                             "Q1 (25%)","Q3 (75%)","IQR"],
+                "Valor": [len(series), np.mean(series), np.median(series),
+                           np.std(series), np.min(series), np.max(series),
+                           np.percentile(series,25), np.percentile(series,75),
+                           np.percentile(series,75)-np.percentile(series,25)]
+            })
+            ts_stats["Valor"] = ts_stats["Valor"].round(4)
+            show_df(ts_stats)
+
+        # Descomposición básica
+        with st.expander("📉 Histograma + Densidad"):
+            import math
+            fig_h, ax = plt.subplots(figsize=(10, 4), dpi=100)
+            ax.hist(series, bins=30, color=DISC[0], edgecolor="black", alpha=0.7, density=True)
+            try:
+                import seaborn as sns
+                sns.kdeplot(series, ax=ax, color=DISC[1], linewidth=2)
+            except Exception:
+                pass
+            ax.set_title("Distribución de la Serie Temporal")
+            ax.set_xlabel("Valor")
+            ax.set_ylabel("Densidad")
+            ax.grid(True, linestyle="--", alpha=0.4)
+            plt.tight_layout()
+            st.pyplot(fig_h)
+            plt.close("all")
+        st.stop()
+
+    # ──────────────────────────────────────────────────────────
+    # CLASIFICACIÓN / REGRESIÓN
+    # ──────────────────────────────────────────────────────────
+    wdf = st.session_state.working_df
+
+    # ── Selección de target (para archivos subidos) ───────────
+    if selected_dataset == "📤 Subir archivo":
+        with st.expander("🎯 Configuración de Columnas", expanded=True):
+            cur_target = st.session_state.target_col or wdf.columns[-1]
+            new_target = st.selectbox(
+                "Columna Target (variable a predecir):",
+                wdf.columns.tolist(),
+                index=list(wdf.columns).index(cur_target) if cur_target in wdf.columns else len(wdf.columns)-1,
+                key="exp_target_sel",
+            )
+            st.session_state.target_col = new_target
+            st.info(f"Target: **{new_target}** · Features: {len(wdf.columns)-1} columnas")
+
+    target_col = st.session_state.target_col
+
+    # ── KPI cards ─────────────────────────────────────────────
+    n_dup  = wdf.duplicated().sum()
+    n_null = int(wdf.isnull().sum().sum())
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("🗃️ Filas",       f"{len(wdf):,}")
+    c2.metric("📐 Columnas",     len(wdf.columns))
+    c3.metric("🔁 Duplicados",   n_dup)
+    c4.metric("❓ Valores Nulos", n_null)
+
+    # ── Vista previa ──────────────────────────────────────────
+    with st.expander("👁️ Vista Previa del Dataset", expanded=True):
+        n_rows = st.slider("Filas a mostrar:", 5, 50, 10, key="exp_preview_rows")
+        show_df(wdf.head(n_rows))
+
+    # ══════════════════════════════════════════════════════
+    # SECCIÓN: LIMPIEZA DE DATOS
+    # ══════════════════════════════════════════════════════
+    with st.expander("🧹 Limpieza de Datos", expanded=True):
+        st.markdown("**Acciones de limpieza aplicadas al dataset en memoria.**")
+
+        col_cl1, col_cl2 = st.columns(2)
+
+        with col_cl1:
+            if st.button("🗑️ Eliminar Filas Duplicadas", key="btn_dup"):
+                antes = len(st.session_state.working_df)
+                st.session_state.working_df = st.session_state.working_df.drop_duplicates()
+                eliminadas = antes - len(st.session_state.working_df)
+                if eliminadas:
+                    st.success(f"Se eliminaron **{eliminadas}** filas duplicadas.")
+                else:
+                    st.info("No se encontraron duplicados.")
+                st.rerun()
+
+        with col_cl2:
+            null_action = st.selectbox("Tratar valores nulos:",
+                ["-- Selecciona acción --",
+                 "Eliminar filas con nulos",
+                 "Rellenar con Media (columnas numéricas)",
+                 "Rellenar con Mediana (columnas numéricas)",
+                 "Rellenar con Moda (todas las columnas)",
+                 "Rellenar con cero"],
+                key="null_action_sel")
+
+            if st.button("✅ Aplicar tratamiento de nulos", key="btn_null"):
+                wdf_tmp = st.session_state.working_df
+                if null_action == "Eliminar filas con nulos":
+                    st.session_state.working_df = wdf_tmp.dropna()
+                    st.success("Filas con nulos eliminadas.")
+                elif null_action == "Rellenar con Media (columnas numéricas)":
+                    num_c = wdf_tmp.select_dtypes(include="number").columns
+                    st.session_state.working_df = wdf_tmp.copy()
+                    st.session_state.working_df[num_c] = wdf_tmp[num_c].fillna(wdf_tmp[num_c].mean())
+                    st.success("Nulos numéricos rellenos con la media.")
+                elif null_action == "Rellenar con Mediana (columnas numéricas)":
+                    num_c = wdf_tmp.select_dtypes(include="number").columns
+                    st.session_state.working_df = wdf_tmp.copy()
+                    st.session_state.working_df[num_c] = wdf_tmp[num_c].fillna(wdf_tmp[num_c].median())
+                    st.success("Nulos numéricos rellenos con la mediana.")
+                elif null_action == "Rellenar con Moda (todas las columnas)":
+                    tmp = wdf_tmp.copy()
+                    for c in tmp.columns:
+                        tmp[c] = tmp[c].fillna(tmp[c].mode().iloc[0] if not tmp[c].mode().empty else 0)
+                    st.session_state.working_df = tmp
+                    st.success("Nulos rellenos con la moda.")
+                elif null_action == "Rellenar con cero":
+                    st.session_state.working_df = wdf_tmp.fillna(0)
+                    st.success("Nulos rellenos con 0.")
+                else:
+                    st.warning("Selecciona una acción primero.")
+                st.rerun()
+
+        st.markdown("---")
+        cols_to_drop = st.multiselect(
+            "🗂️ Seleccionar columnas a eliminar:",
+            [c for c in wdf.columns if c != target_col],
+            key="exp_drop_cols"
+        )
+        if st.button("❌ Eliminar columnas seleccionadas", key="btn_drop") and cols_to_drop:
+            st.session_state.working_df = st.session_state.working_df.drop(columns=cols_to_drop, errors="ignore")
+            st.success(f"Columnas eliminadas: {cols_to_drop}")
+            st.rerun()
+
+        if st.button("🔄 Revertir todos los cambios", key="btn_revert"):
+            result = load_predefined_dataset(selected_dataset, problem_type)
+            if selected_dataset != "📤 Subir archivo":
+                df_or_s, tgt = result
+                st.session_state.working_df = df_or_s
+                st.session_state.target_col = tgt
+            st.success("Dataset restaurado al estado original.")
+            st.rerun()
+
+    # Refrescar wdf después de posibles cambios
+    wdf        = st.session_state.working_df
+    target_col = st.session_state.target_col
+
+    # ══════════════════════════════════════════════════════
+    # SECCIÓN: ESTADÍSTICAS Y PERFILADO
+    # ══════════════════════════════════════════════════════
+    with st.expander("📋 Tipos de Datos y Valores Nulos"):
+        tipo_df = pd.DataFrame({
+            "Columna":   wdf.dtypes.index,
+            "Tipo":      wdf.dtypes.values.astype(str),
+            "No Nulos":  wdf.count().values,
+            "Nulos":     wdf.isnull().sum().values,
+            "% Nulos":   (wdf.isnull().sum() / len(wdf) * 100).round(2).values,
+        })
+        show_df(tipo_df)
+
+    with st.expander("📐 Estadísticas Descriptivas"):
+        num_df = wdf.select_dtypes(include="number")
+        stat_sel = st.selectbox("Estadística:",
+            ["Describe completo","Media","Mediana","Desv. Estándar","Mínimo","Máximo","Cuantiles"],
+            key="stat_sel")
+        if stat_sel == "Describe completo":
+            show_df(num_df.describe().round(4))
+        elif stat_sel == "Media":
+            show_df(num_df.mean().round(4).to_frame("Media"))
+        elif stat_sel == "Mediana":
+            show_df(num_df.median().round(4).to_frame("Mediana"))
+        elif stat_sel == "Desv. Estándar":
+            show_df(num_df.std().round(4).to_frame("Desv. Std"))
+        elif stat_sel == "Mínimo":
+            show_df(num_df.min().round(4).to_frame("Mínimo"))
+        elif stat_sel == "Máximo":
+            show_df(num_df.max().round(4).to_frame("Máximo"))
+        elif stat_sel == "Cuantiles":
+            show_df(num_df.quantile([0, 0.25, 0.5, 0.75, 1]).round(4))
+
+    with st.expander("🔢 Frecuencia de Valores por Columna"):
+        col_freq = st.selectbox("Columna:", wdf.columns.tolist(), key="freq_col")
+        vc = wdf[col_freq].value_counts().reset_index()
+        vc.columns = ["Valor","Conteo"]
+        vc["% del Total"] = (vc["Conteo"] / len(wdf) * 100).round(2)
+        show_df(vc.head(30))
+        if len(vc) <= 30:
+            fig_vc = px.bar(vc, x="Valor", y="Conteo", color="Conteo",
+                            color_continuous_scale=C_MAIN,
+                            title=f"Frecuencia: {col_freq}", template=TMPL)
+            st.plotly_chart(fig_vc, width="stretch")
+
+    # ══════════════════════════════════════════════════════
+    # SECCIÓN: DISTRIBUCIÓN DE CLASES (Clasificación)
+    # ══════════════════════════════════════════════════════
+    if problem_type == "Clasificación" and target_col in wdf.columns:
+        with st.expander("🎯 Distribución del Target / Clases", expanded=True):
+            y_vals = wdf[target_col]
+            vc_t = y_vals.value_counts().reset_index()
+            vc_t.columns = ["Clase","Conteo"]
+
+            imb = check_imbalance(y_vals.values)
+            m1,m2,m3 = st.columns(3)
+            m1.metric("Clases únicas", len(vc_t))
+            m2.metric("Ratio min/max", f"{imb['ratio']:.3f}")
+            m3.metric("Severidad", imb["severity"])
+
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                fig_cb = px.bar(vc_t, x="Clase", y="Conteo", color="Conteo",
+                                color_continuous_scale=C_MAIN,
+                                title="Conteo por Clase", template=TMPL)
+                st.plotly_chart(fig_cb, width="stretch")
+            with cc2:
+                fig_cp = px.pie(vc_t, values="Conteo", names="Clase",
+                                color_discrete_sequence=DISC,
+                                title="Proporción de Clases", template=TMPL)
+                st.plotly_chart(fig_cp, width="stretch")
+
+            if imb["is_imbalanced"]:
+                st.warning(f"⚠️ Dataset desbalanceado (ratio={imb['ratio']:.3f}, "
+                           f"severidad **{imb['severity']}**). Considera SMOTE en la configuración.")
+
+    # ══════════════════════════════════════════════════════
+    # SECCIÓN: VISUALIZACIONES EDA (matplotlib/seaborn)
+    # ══════════════════════════════════════════════════════
+    st.subheader("📉 Visualizaciones EDA")
+    st.caption("Generadas con matplotlib/seaborn vía la clase analisisEDA (CRISP-DM)")
+
+    viz_type = st.selectbox("Tipo de gráfico:", [
+        "Correlación (Heatmap)",
+        "Distribución + KDE",
+        "Boxplots (detección de outliers)",
+        "Densidad KDE",
+        "Histogramas",
+        "Dispersión por Pares (Pairplot)",
+        "Distribución de la Clase (target)",
+    ], key="viz_type_sel")
+
+    if st.button("🎨 Generar Visualización", key="btn_viz"):
+        with st.spinner("Generando gráfico..."):
+            try:
+                eda_obj = analisisEDA(wdf.select_dtypes(include=["number","object","category"]))
+                fig_v = None
+
+                if viz_type == "Correlación (Heatmap)":
+                    fig_v = eda_obj.graficoCorrelacion()
+                elif viz_type == "Distribución + KDE":
+                    fig_v = eda_obj.distribucionVariables()
+                elif viz_type == "Boxplots (detección de outliers)":
+                    fig_v = eda_obj.graficoBoxplot()
+                elif viz_type == "Densidad KDE":
+                    fig_v = eda_obj.datosDensidad()
+                elif viz_type == "Histogramas":
+                    fig_v = eda_obj.histogramas()
+                elif viz_type == "Dispersión por Pares (Pairplot)":
+                    st.info("⏳ El pairplot puede tardar unos segundos...")
+                    fig_v = eda_obj.graficosDispersion()
+                elif viz_type == "Distribución de la Clase (target)":
+                    if target_col and target_col in wdf.columns:
+                        eda_full = analisisEDA(wdf)
+                        fig_v = eda_full.histogramaClase(target_col)
+                    else:
+                        st.warning("Selecciona primero una columna target.")
+
+                if fig_v:
+                    st.pyplot(fig_v)
+                    plt.close("all")
+                else:
+                    st.warning("No se pudo generar el gráfico (sin columnas numéricas o target no configurado).")
+            except Exception as e:
+                st.error(f"Error al generar el gráfico: {e}")
+
+    # ══════════════════════════════════════════════════════
+    # CORRELACIÓN INTERACTIVA (Plotly)
+    # ══════════════════════════════════════════════════════
+    with st.expander("🔗 Correlación Interactiva (Plotly)"):
+        num_cols_corr = wdf.select_dtypes(include="number").columns
+        if len(num_cols_corr) >= 2:
+            corr_matrix = wdf[num_cols_corr].corr().round(3)
+            fig_corr = px.imshow(corr_matrix, color_continuous_scale=C_MAIN,
+                                  title="Matriz de Correlación", aspect="auto",
+                                  text_auto=".2f", template=TMPL)
+            st.plotly_chart(fig_corr, width="stretch")
+        else:
+            st.info("Se necesitan al menos 2 columnas numéricas para la correlación.")
+
+    # Preparar X, y para benchmarking (se actualizan con working_df)
+    if target_col and target_col in wdf.columns:
+        st.session_state["_ready_X"] = wdf.drop(columns=[target_col])
+        st.session_state["_ready_y"] = wdf[target_col]
     else:
-        if selected_dataset == "Archivo (CSV/Excel/JSON)":
-            if problem_type in ["Clasificación", "Regresión"] and (
-                "X" not in st.session_state or "y" not in st.session_state
-            ):
-                st.warning("Configura la columna target en Exploración de Datos antes de iniciar.")
-            if problem_type == "Series de Tiempo" and "series" not in st.session_state:
-                st.warning("Configura las columnas de fecha y valor en Exploración de Datos antes de iniciar.")
+        st.session_state["_ready_X"] = wdf
+        st.session_state["_ready_y"] = None
 
-        if st.button("Iniciar Benchmarking", type="primary", use_container_width=True, key="btn_run_benchmark"):
-            with st.spinner("Entrenando y evaluando modelos..."):
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 2 · CONFIGURACIÓN DE MODELOS E HIPERPARÁMETROS     ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_config:
+    st.header("⚙️ Configuración de Modelos e Hiperparámetros")
+    st.info("Selecciona los modelos y configura sus hiperparámetros. "
+            "Los parámetros del experimento (test size, K-Folds, balanceo) están en el sidebar.")
+
+    if problem_type in ["Clasificación", "Regresión"]:
+        all_clf = ["Logistic Regression","Random Forest","Decision Tree",
+                   "SVM","K-Nearest Neighbors","Naive Bayes","Gradient Boosting","XGBoost"]
+        all_reg = ["Ridge Regression","Lasso Regression","Random Forest","Decision Tree",
+                   "SVR","K-Nearest Neighbors","Gradient Boosting","XGBoost"]
+        pool = all_clf if problem_type == "Clasificación" else all_reg
+        # Quitar XGBoost si no está instalado
+        try:
+            import xgboost  # noqa
+        except ImportError:
+            pool = [m for m in pool if m != "XGBoost"]
+
+        st.subheader("🤖 Selección de Modelos")
+        selected_models = st.multiselect("Modelos a comparar:", pool, default=pool, key="cfg_models")
+        st.session_state.selected_models = selected_models
+
+        st.subheader("🔧 Hiperparámetros por Modelo")
+        st.caption("Expande cada modelo para ajustar sus parámetros. "
+                   "Si no cambias nada, se usarán los valores predeterminados.")
+
+        hp = st.session_state.get("hyperparams", {})
+
+        for model_name in selected_models:
+            with st.expander(f"⚙️ {model_name}", expanded=False):
+                use_defaults = st.checkbox("Usar parámetros predeterminados",
+                                            value=hp.get(model_name, {}).get("_defaults", True),
+                                            key=f"def_{model_name}")
+                if use_defaults:
+                    hp[model_name] = {"_defaults": True}
+                else:
+                    mhp = {}
+                    mhp["_defaults"] = False
+
+                    # ─ Clasificación ─────────────────────────────────
+                    if model_name == "Logistic Regression":
+                        c1, c2 = st.columns(2)
+                        mhp["C"] = c1.number_input("C (Regularización)", 0.001, 1000.0, 1.0, step=0.1,
+                                                     key=f"lr_C_{model_name}")
+                        mhp["max_iter"] = c2.number_input("Max iteraciones", 100, 10000, 1000, step=100,
+                                                            key=f"lr_mi_{model_name}")
+                        mhp["solver"] = st.selectbox("Solver",
+                            ["lbfgs","liblinear","sag","saga"], key=f"lr_s_{model_name}")
+
+                    elif model_name == "Random Forest":
+                        c1, c2 = st.columns(2)
+                        mhp["n_estimators"] = c1.slider("n_estimators", 10, 500, 100,
+                                                          key=f"rf_ne_{model_name}")
+                        mhp["max_depth"] = c2.slider("max_depth (0=None)", 0, 50, 0,
+                                                       key=f"rf_md_{model_name}")
+                        c3, c4 = st.columns(2)
+                        mhp["min_samples_split"] = c3.slider("min_samples_split", 2, 20, 2,
+                                                               key=f"rf_mss_{model_name}")
+                        mhp["max_features"] = c4.selectbox("max_features",
+                            ["sqrt","log2","None"], key=f"rf_mf_{model_name}")
+                        if mhp["max_features"] == "None":
+                            mhp["max_features"] = None
+
+                    elif model_name == "Decision Tree":
+                        c1, c2 = st.columns(2)
+                        mhp["max_depth"] = c1.slider("max_depth (0=None)", 0, 50, 0,
+                                                       key=f"dt_md_{model_name}")
+                        mhp["min_samples_split"] = c2.slider("min_samples_split", 2, 20, 2,
+                                                               key=f"dt_mss_{model_name}")
+                        mhp["criterion"] = st.selectbox("criterion",
+                            ["gini","entropy","log_loss"] if problem_type == "Clasificación"
+                            else ["squared_error","friedman_mse","absolute_error","poisson"],
+                            key=f"dt_cr_{model_name}")
+
+                    elif model_name in ("SVM", "SVR"):
+                        c1, c2 = st.columns(2)
+                        mhp["C"] = c1.number_input("C", 0.001, 1000.0, 1.0, step=0.1,
+                                                     key=f"svm_C_{model_name}")
+                        mhp["kernel"] = c2.selectbox("Kernel",
+                            ["rbf","linear","poly","sigmoid"], key=f"svm_k_{model_name}")
+                        mhp["gamma"] = st.selectbox("Gamma",
+                            ["scale","auto"], key=f"svm_g_{model_name}")
+
+                    elif model_name == "K-Nearest Neighbors":
+                        c1, c2 = st.columns(2)
+                        mhp["n_neighbors"] = c1.slider("n_neighbors", 1, 50, 5,
+                                                         key=f"knn_n_{model_name}")
+                        mhp["weights"] = c2.selectbox("Weights",
+                            ["uniform","distance"], key=f"knn_w_{model_name}")
+                        mhp["metric"] = st.selectbox("Metric",
+                            ["minkowski","euclidean","manhattan","chebyshev"],
+                            key=f"knn_m_{model_name}")
+
+                    elif model_name == "Naive Bayes":
+                        mhp["var_smoothing"] = st.number_input(
+                            "var_smoothing", 1e-12, 1e-3, 1e-9, format="%.2e",
+                            key=f"nb_vs_{model_name}")
+
+                    elif model_name in ("Gradient Boosting", "Ridge Regression",
+                                        "Lasso Regression"):
+                        c1, c2 = st.columns(2)
+                        if model_name == "Gradient Boosting":
+                            mhp["n_estimators"] = c1.slider("n_estimators", 50, 500, 100,
+                                                              key=f"gb_ne_{model_name}")
+                            mhp["learning_rate"] = c2.slider("learning_rate", 0.01, 1.0, 0.1,
+                                                               key=f"gb_lr_{model_name}")
+                            mhp["max_depth"] = st.slider("max_depth", 1, 15, 3,
+                                                           key=f"gb_md_{model_name}")
+                        else:  # Ridge / Lasso
+                            mhp["alpha"] = c1.number_input("alpha (Regularización)",
+                                0.0001, 1000.0, 1.0, step=0.1, key=f"rl_a_{model_name}")
+
+                    elif model_name == "XGBoost":
+                        c1, c2 = st.columns(2)
+                        mhp["n_estimators"] = c1.slider("n_estimators", 50, 500, 100,
+                                                          key=f"xgb_ne_{model_name}")
+                        mhp["learning_rate"] = c2.slider("learning_rate", 0.01, 1.0, 0.1,
+                                                           key=f"xgb_lr_{model_name}")
+                        c3, c4 = st.columns(2)
+                        mhp["max_depth"] = c3.slider("max_depth", 1, 15, 6,
+                                                       key=f"xgb_md_{model_name}")
+                        mhp["subsample"] = c4.slider("subsample", 0.4, 1.0, 1.0, step=0.05,
+                                                       key=f"xgb_ss_{model_name}")
+
+                    hp[model_name] = mhp
+
+        st.session_state.hyperparams = hp
+
+    else:
+        # Series de tiempo
+        ts_pool = ["Holt-Winters","Holt-Winters Calibrado",
+                   "ARIMA(1,1,1)","ARIMA Calibrado","LSTM"]
+        sel_ts = st.multiselect("Modelos:", ts_pool, default=ts_pool[:4], key="cfg_ts")
+        st.session_state.selected_models = sel_ts
+
+        st.subheader("🔧 Hiperparámetros")
+        hp = st.session_state.get("hyperparams", {})
+
+        for model_name in sel_ts:
+            with st.expander(f"⚙️ {model_name}", expanded=False):
+                use_def = st.checkbox("Usar predeterminados",
+                                       value=hp.get(model_name, {}).get("_defaults", True),
+                                       key=f"ts_def_{model_name}")
+                if use_def:
+                    hp[model_name] = {"_defaults": True}
+                else:
+                    mhp = {"_defaults": False}
+                    if model_name == "Holt-Winters":
+                        c1, c2 = st.columns(2)
+                        mhp["trend"]    = c1.selectbox("trend",   ["add","mul","None"],
+                                                        key=f"hw_tr_{model_name}")
+                        mhp["seasonal"] = c2.selectbox("seasonal",["add","mul","None"],
+                                                        key=f"hw_se_{model_name}")
+                        if mhp["trend"]    == "None": mhp["trend"]    = None
+                        if mhp["seasonal"] == "None": mhp["seasonal"] = None
+                    elif model_name == "ARIMA(1,1,1)":
+                        c1, c2, c3 = st.columns(3)
+                        mhp["p"] = c1.slider("p (AR)", 0, 5, 1, key=f"ar_p_{model_name}")
+                        mhp["d"] = c2.slider("d (I)",  0, 2, 1, key=f"ar_d_{model_name}")
+                        mhp["q"] = c3.slider("q (MA)", 0, 5, 1, key=f"ar_q_{model_name}")
+                    elif model_name == "ARIMA Calibrado":
+                        c1, c2, c3 = st.columns(3)
+                        mhp["max_p"] = c1.slider("max_p", 1, 5, 2, key=f"arc_mp_{model_name}")
+                        mhp["max_d"] = c2.slider("max_d", 1, 2, 2, key=f"arc_md_{model_name}")
+                        mhp["max_q"] = c3.slider("max_q", 1, 5, 2, key=f"arc_mq_{model_name}")
+                    elif model_name == "LSTM":
+                        c1, c2 = st.columns(2)
+                        mhp["units"]       = c1.slider("Unidades LSTM", 16, 256, 50, step=16,
+                                                         key=f"lstm_u_{model_name}")
+                        mhp["layers"]      = c2.slider("Capas LSTM", 1, 4, 2,
+                                                         key=f"lstm_l_{model_name}")
+                        c3, c4 = st.columns(2)
+                        mhp["epochs"]      = c3.slider("Épocas", 10, 200, 30, step=10,
+                                                         key=f"lstm_e_{model_name}")
+                        mhp["window_size"] = c4.slider("Ventana temporal", 5, 50, 12,
+                                                         key=f"lstm_ws_{model_name}")
+                        mhp["dropout"]     = st.slider("Dropout", 0.0, 0.5, 0.2, step=0.05,
+                                                         key=f"lstm_do_{model_name}")
+                    hp[model_name] = mhp
+        st.session_state.hyperparams = hp
+
+    st.divider()
+    st.subheader("📋 Resumen de Configuración")
+    cfg = {
+        "Tipo de Problema": problem_type,
+        "Dataset": selected_dataset,
+    }
+    if problem_type != "Series de Tiempo":
+        cfg.update({"Test Size": f"{int(test_size*100)}%", "K-Folds": str(cv_folds),
+                    "Escalar Features": str(scale_features_flag)})
+        if problem_type == "Clasificación":
+            cfg.update({"Threshold": str(threshold), "Balanceo": balancing})
+    else:
+        cfg.update({"Train Ratio": f"{int(train_ratio*100)}%",
+                    "Períodos Estacionales": str(seasonal_periods)})
+    show_df(pd.DataFrame({"Parámetro": cfg.keys(), "Valor": cfg.values()}))
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 3 · BENCHMARKING                                   ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_bench:
+    st.header("🏆 Benchmarking de Modelos")
+
+    if not st.session_state.data_loaded:
+        st.warning("⚠️ Primero carga el dataset en la pestaña **Exploración & EDA**.")
+    else:
+        if st.button("🚀 Iniciar Benchmarking", type="primary",
+                     use_container_width=True, key="btn_bench"):
+            with st.spinner("⏳ Entrenando y evaluando modelos..."):
                 try:
+                    hp   = st.session_state.get("hyperparams", {})
+                    sels = st.session_state.get("selected_models", [])
+
                     if problem_type != "Series de Tiempo":
-                        X = st.session_state.X
-                        y = st.session_state.y
+                        X_ready = st.session_state.get("_ready_X")
+                        y_ready = st.session_state.get("_ready_y")
+                        if X_ready is None or y_ready is None:
+                            st.error("Confirma la configuración del dataset en Exploración.")
+                            st.stop()
 
-                        from mlbenchmark.models_classification import get_classification_models
-                        from mlbenchmark.models_regression import get_regression_models
+                        pt_key = "classification" if problem_type == "Clasificación" else "regression"
+                        models_built = build_models_with_hyperparams(pt_key, sels, hp)
 
-                        if problem_type == "Clasificación":
-                            all_m = get_classification_models()
-                            sel = st.session_state.get("selected_models", list(all_m.keys()))
-                            models_to_run = {k: v for k, v in all_m.items() if k in sel}
-                            pt_key = "classification"
-                            benchmark_threshold = threshold
-                            benchmark_balancing = balancing
-                        else:
-                            all_m = get_regression_models()
-                            sel = st.session_state.get("selected_models", list(all_m.keys()))
-                            models_to_run = {k: v for k, v in all_m.items() if k in sel}
-                            pt_key = "regression"
-                            benchmark_threshold = 0.5
-                            benchmark_balancing = "none"
+                        if not models_built:
+                            st.error("Selecciona al menos un modelo en Configuración.")
+                            st.stop()
 
                         result = run_benchmark(
-                            problem_type=pt_key,
-                            X=X.values,
-                            y=y.values,
-                            models=models_to_run,
-                            test_size=test_size,
-                            cv_folds=cv_folds,
-                            threshold=benchmark_threshold,
-                            balancing_technique=benchmark_balancing,
+                            problem_type=pt_key, X=X_ready, y=y_ready,
+                            models=models_built,
+                            test_size=test_size, cv_folds=cv_folds,
+                            threshold=threshold if problem_type == "Clasificación" else 0.5,
+                            balancing_technique=balancing if problem_type == "Clasificación" else "none",
                             scale=scale_features_flag,
                         )
-
                     else:
                         series = st.session_state.series
-                        from mlbenchmark.models_timeseries import get_timeseries_models
-
-                        all_ts = get_timeseries_models(seasonal_periods)
-                        sel_ts = st.session_state.get("selected_ts_models", list(all_ts.keys()))
-                        models_ts = {k: v for k, v in all_ts.items() if k in sel_ts}
-
+                        if series is None:
+                            st.error("Carga la serie de tiempo primero.")
+                            st.stop()
+                        models_ts = build_ts_models_with_hyperparams(sels, hp, seasonal_periods)
+                        if not models_ts:
+                            st.error("Selecciona al menos un modelo en Configuración.")
+                            st.stop()
                         result = run_benchmark(
-                            problem_type="timeseries",
-                            series=series.values if hasattr(series, "values") else np.array(series),
-                            models=models_ts,
-                            seasonal_periods=seasonal_periods,
+                            problem_type="timeseries", series=series,
+                            models=models_ts, seasonal_periods=seasonal_periods,
                             train_ratio=train_ratio,
                         )
 
-                    st.session_state.results = result
+                    st.session_state.results       = result
                     st.session_state.benchmark_run = True
-                    st.success("Benchmarking completado.")
+                    st.success("✅ ¡Benchmarking completado!")
 
                 except Exception as e:
                     import traceback
-                    st.error(f"Error durante el benchmarking: {e}")
+                    st.error(f"❌ Error: {e}")
                     st.code(traceback.format_exc())
 
         if st.session_state.benchmark_run and st.session_state.results:
-            res = st.session_state.results
-            df = res["results"]
-            pt = res["problem_type"]
+            res   = st.session_state.results
+            df    = res["results"]
+            pt    = res["problem_type"]
+            dcols = [c for c in df.columns if not c.startswith("_")]
+            ddf   = df[dcols].copy()
 
-            st.subheader("Tabla Comparativa de Modelos")
+            st.subheader("📊 Tabla Comparativa")
+            show_df(style_table(ddf))
 
-            display_cols = [c for c in df.columns if not c.startswith("_")]
-            display_df = df[display_cols].copy()
-
-            st.dataframe(
-                style_color_table(display_df),
-                use_container_width=True,
-            )
-
-            st.subheader("Comparación Visual")
-
+            st.subheader("📈 Comparación Visual")
             if pt == "classification":
-                metric_to_plot = st.selectbox(
-                    "Métrica a visualizar:",
-                    ["AUC-ROC", "Accuracy", "F1-Score", "Recall", "CV Mean"],
-                    key="bench_metric_to_plot_selectbox",
-                )
+                m = st.selectbox("Métrica:",
+                    ["AUC-ROC","Accuracy","F1-Score","Recall","Precision","CV Mean"],
+                    key="bench_metric")
+                if m in ddf.columns:
+                    fig_b = px.bar(ddf, x="Model", y=m, color=m,
+                                   color_continuous_scale=C_MAIN,
+                                   title=f"Comparación: {m}", text=m, template=TMPL)
+                    fig_b.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+                    st.plotly_chart(fig_b, width="stretch")
 
-                fig_bar = px.bar(
-                    display_df,
-                    x="Model",
-                    y=metric_to_plot,
-                    color=metric_to_plot,
-                    color_continuous_scale=COLOR_SCALE_MAIN,
-                    title=f"Comparación por {metric_to_plot}",
-                    text=metric_to_plot,
-                    template=PLOTLY_TEMPLATE,
-                )
-                fig_bar.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-                if "CV Mean" in display_df.columns and "CV Std" in display_df.columns:
-                    fig_cv = go.Figure()
-                    fig_cv.add_trace(go.Bar(
-                        x=display_df["Model"],
-                        y=display_df["CV Mean"],
-                        error_y=dict(type="data", array=display_df["CV Std"]),
-                        name="CV Mean ± Std",
-                        marker_color=DISCRETE_COLORS[0],
-                    ))
-                    fig_cv.update_layout(
-                        title="K-Fold Cross-Validation (Mean ± Std)",
-                        xaxis_tickangle=-30,
-                        template=PLOTLY_TEMPLATE,
-                    )
-                    st.plotly_chart(fig_cv, use_container_width=True)
+                if "CV Mean" in ddf.columns and "CV Std" in ddf.columns:
+                    fig_cv = go.Figure(go.Bar(
+                        x=ddf["Model"], y=ddf["CV Mean"],
+                        error_y=dict(type="data", array=ddf["CV Std"]),
+                        marker_color=DISC[0], name="CV Mean ± Std"))
+                    fig_cv.update_layout(title="K-Fold CV (Mean ± Std)",
+                                          xaxis_tickangle=-30, template=TMPL)
+                    st.plotly_chart(fig_cv, width="stretch")
 
             elif pt == "regression":
-                c1, c2 = st.columns(2)
-
-                with c1:
-                    fig_r2 = px.bar(
-                        display_df,
-                        x="Model",
-                        y="R²",
-                        color="R²",
-                        color_continuous_scale=COLOR_SCALE_MAIN,
-                        title="R² Score por Modelo",
-                        text="R²",
-                        template=PLOTLY_TEMPLATE,
-                    )
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    fig_r2 = px.bar(ddf, x="Model", y="R²", color="R²",
+                                    color_continuous_scale=C_MAIN,
+                                    title="R² Score", text="R²", template=TMPL)
                     fig_r2.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-                    st.plotly_chart(fig_r2, use_container_width=True)
-
-                with c2:
-                    fig_rmse = px.bar(
-                        display_df,
-                        x="Model",
-                        y="RMSE",
-                        color="RMSE",
-                        color_continuous_scale=COLOR_SCALE_REVERSE,
-                        title="RMSE por Modelo",
-                        text="RMSE",
-                        template=PLOTLY_TEMPLATE,
-                    )
-                    fig_rmse.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-                    st.plotly_chart(fig_rmse, use_container_width=True)
+                    st.plotly_chart(fig_r2, width="stretch")
+                with cc2:
+                    fig_rm = px.bar(ddf, x="Model", y="RMSE", color="RMSE",
+                                    color_continuous_scale=C_REV,
+                                    title="RMSE", text="RMSE", template=TMPL)
+                    fig_rm.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+                    st.plotly_chart(fig_rm, width="stretch")
 
             elif pt == "timeseries":
-                fig_ts_bar = px.bar(
-                    display_df,
-                    x="Model",
-                    y="RMSE",
-                    color="RMSE",
-                    color_continuous_scale=COLOR_SCALE_REVERSE,
-                    title="RMSE por Modelo (menor = mejor)",
-                    text="RMSE",
-                    template=PLOTLY_TEMPLATE,
-                )
-                fig_ts_bar.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-                st.plotly_chart(fig_ts_bar, use_container_width=True)
+                fig_tb = px.bar(ddf, x="Model", y="RMSE", color="RMSE",
+                                color_continuous_scale=C_REV,
+                                title="RMSE (menor=mejor)", text="RMSE", template=TMPL)
+                fig_tb.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+                st.plotly_chart(fig_tb, width="stretch")
 
-                train = res["train"]
-                test = res["test"]
-
+                train, test = res["train"], res["test"]
                 fig_f = go.Figure()
+                fig_f.add_trace(go.Scatter(y=list(train), name="Train",
+                                            line=dict(color=DISC[8])))
                 fig_f.add_trace(go.Scatter(
-                    y=list(train),
-                    name="Train",
-                    line=dict(color=DISCRETE_COLORS[8]),
-                ))
-                fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train) + len(test))),
-                    y=list(test),
-                    name="Real",
-                    line=dict(color=DISCRETE_COLORS[2], width=2),
-                ))
-
-                colors = DISCRETE_COLORS
+                    x=list(range(len(train), len(train)+len(test))),
+                    y=list(test), name="Real", line=dict(color=DISC[2], width=2)))
                 for i, row in df.iterrows():
                     if row.get("_predictions") is not None:
                         fig_f.add_trace(go.Scatter(
-                            x=list(range(len(train), len(train) + len(test))),
-                            y=row["_predictions"],
-                            name=row["Model"],
-                            line=dict(color=colors[i % len(colors)], dash="dash"),
-                        ))
-
-                fig_f.update_layout(
-                    title="Forecasts vs Valores Reales",
-                    xaxis_title="Tiempo",
-                    yaxis_title="Valor",
-                    template=PLOTLY_TEMPLATE,
-                )
-                st.plotly_chart(fig_f, use_container_width=True)
+                            x=list(range(len(train), len(train)+len(test))),
+                            y=row["_predictions"], name=row["Model"],
+                            line=dict(color=DISC[i % len(DISC)], dash="dash")))
+                fig_f.update_layout(title="Forecasts vs Valores Reales", template=TMPL)
+                st.plotly_chart(fig_f, width="stretch")
 
 
-# =========================
-# TAB 4: DETALLE
-# =========================
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 4 · RESULTADOS DETALLADOS                          ║
+# ╚══════════════════════════════════════════════════════════╝
 with tab_detail:
-    st.header("Resultados Detallados por Modelo")
+    st.header("📈 Resultados Detallados por Modelo")
 
     if not st.session_state.benchmark_run:
-        st.warning("Ejecuta el benchmarking primero.")
+        st.warning("⚠️ Ejecuta el benchmarking primero.")
     else:
         res = st.session_state.results
-        df = res["results"]
-        pt = res["problem_type"]
+        df  = res["results"]
+        pt  = res["problem_type"]
 
         if pt == "classification":
-            model_names = df["Model"].tolist()
-            selected_model = st.selectbox(
-                "Selecciona un modelo:",
-                model_names,
-                key="detail_selected_classification_model",
-            )
-            row = df[df["Model"] == selected_model].iloc[0]
+            sel_m = st.selectbox("Modelo:", df["Model"].tolist(), key="det_clf_sel")
+            row   = df[df["Model"] == sel_m].iloc[0]
 
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Accuracy", f"{row['Accuracy']:.4f}")
-            c2.metric("Precision", f"{row['Precision']:.4f}")
-            c3.metric("Recall", f"{row['Recall']:.4f}")
-            c4.metric("F1-Score", f"{row['F1-Score']:.4f}")
-            c5.metric("AUC-ROC", f"{row['AUC-ROC']:.4f}")
+            if row["Accuracy"] is None:
+                st.error(f"❌ El modelo **{sel_m}** falló: `{row.get('_error','Error desconocido')}`")
+                st.stop()
 
-            col_roc, col_cm = st.columns(2)
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Accuracy",  fmt(row["Accuracy"]))
+            c2.metric("Precision", fmt(row["Precision"]))
+            c3.metric("Recall",    fmt(row["Recall"]))
+            c4.metric("F1-Score",  fmt(row["F1-Score"]))
+            c5.metric("AUC-ROC",   fmt(row["AUC-ROC"]))
 
-            with col_roc:
-                y_test = res["y_test"]
-                y_prob = row["_y_prob"]
+            y_test = res["y_test"]
+            y_prob  = row["_y_prob"]
+            col_r, col_c = st.columns(2)
+
+            with col_r:
                 if y_prob is not None:
                     try:
                         fpr, tpr, _ = roc_curve_data(y_test, y_prob)
                         fig_roc = go.Figure()
-                        fig_roc.add_trace(go.Scatter(
-                            x=fpr,
-                            y=tpr,
-                            fill="tozeroy",
-                            name=f"AUC={row['AUC-ROC']:.4f}",
-                            line=dict(color=DISCRETE_COLORS[0], width=2),
-                        ))
-                        fig_roc.add_trace(go.Scatter(
-                            x=[0, 1],
-                            y=[0, 1],
-                            line=dict(dash="dash", color=DISCRETE_COLORS[9]),
-                            name="Aleatorio",
-                        ))
-                        fig_roc.update_layout(
-                            title="Curva ROC",
-                            xaxis_title="FPR (False Positive Rate)",
-                            yaxis_title="TPR (True Positive Rate)",
-                            template=PLOTLY_TEMPLATE,
-                        )
-                        st.plotly_chart(fig_roc, use_container_width=True)
+                        fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, fill="tozeroy",
+                            name=f"AUC={fmt(row['AUC-ROC'])}",
+                            line=dict(color=DISC[0], width=2)))
+                        fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1],
+                            line=dict(dash="dash", color=DISC[9]), name="Aleatorio"))
+                        fig_roc.update_layout(title="Curva ROC",
+                            xaxis_title="FPR", yaxis_title="TPR", template=TMPL)
+                        st.plotly_chart(fig_roc, width="stretch")
                     except Exception as e:
-                        st.warning(f"No se pudo graficar ROC: {e}")
+                        st.warning(str(e))
 
-            with col_cm:
+            with col_c:
                 cm = row["_confusion_matrix"]
-                if cm is not None:
-                    cm_arr = np.array(cm)
-                    labels = ["Negativo", "Positivo"]
-                    fig_cm = px.imshow(
-                        cm_arr,
-                        text_auto=True,
-                        x=labels,
-                        y=labels,
-                        color_continuous_scale=COLOR_SCALE_MAIN,
-                        title="Matriz de Confusión",
-                        labels=dict(x="Predicho", y="Real"),
-                    )
-                    fig_cm.update_layout(template=PLOTLY_TEMPLATE)
-                    st.plotly_chart(fig_cm, use_container_width=True)
+                if cm:
+                    fig_cm = px.imshow(np.array(cm), text_auto=True,
+                        x=["Neg","Pos"], y=["Neg","Pos"],
+                        color_continuous_scale=C_MAIN, title="Matriz de Confusión",
+                        labels=dict(x="Predicho", y="Real"))
+                    fig_cm.update_layout(template=TMPL)
+                    st.plotly_chart(fig_cm, width="stretch")
 
-            st.subheader("Scores por Fold (Cross-Validation)")
-            cv_scores = row["CV Scores"]
-            if cv_scores is not None and len(cv_scores) > 0:
-                fold_df = pd.DataFrame({
-                    "Fold": [f"Fold {i+1}" for i in range(len(cv_scores))],
-                    "AUC-ROC": cv_scores,
-                })
-                fig_cv = px.bar(
-                    fold_df,
-                    x="Fold",
-                    y="AUC-ROC",
-                    color="AUC-ROC",
-                    color_continuous_scale=COLOR_SCALE_MAIN,
-                    title=f"K-Fold CV | Mean={row['CV Mean']:.4f} ± {row['CV Std']:.4f}",
-                    template=PLOTLY_TEMPLATE,
-                )
-                fig_cv.add_hline(
-                    y=row["CV Mean"],
-                    line_dash="dash",
-                    line_color="white",
-                    annotation_text="Media",
-                )
-                st.plotly_chart(fig_cv, use_container_width=True)
+            st.subheader("🔄 Scores por Fold")
+            cv_s = row["CV Scores"]
+            if cv_s and len(cv_s) > 0:
+                fdf = pd.DataFrame({"Fold": [f"Fold {i+1}" for i in range(len(cv_s))],
+                                     "AUC-ROC": cv_s})
+                fig_cv = px.bar(fdf, x="Fold", y="AUC-ROC", color="AUC-ROC",
+                                 color_continuous_scale=C_MAIN, template=TMPL,
+                                 title=f"K-Fold | Mean={fmt(row['CV Mean'])} ± {fmt(row['CV Std'])}")
+                fig_cv.add_hline(y=row["CV Mean"], line_dash="dash",
+                                  line_color="white", annotation_text="Media")
+                st.plotly_chart(fig_cv, width="stretch")
 
-            st.subheader("Análisis de Threshold")
+            st.subheader("⚖️ Análisis de Threshold")
             if y_prob is not None:
-                thr_data = threshold_analysis(y_test, y_prob)
-                thr_df = pd.DataFrame(thr_data)
-                fig_thr = go.Figure()
-                line_colors = [DISCRETE_COLORS[0], DISCRETE_COLORS[1], DISCRETE_COLORS[2], DISCRETE_COLORS[3]]
-
-                for i, col_name in enumerate(["accuracy", "precision", "recall", "f1"]):
-                    fig_thr.add_trace(go.Scatter(
-                        x=thr_df["threshold"],
-                        y=thr_df[col_name],
-                        name=col_name.capitalize(),
-                        mode="lines",
-                        line=dict(color=line_colors[i]),
-                    ))
-
-                fig_thr.update_layout(
-                    title="Métricas vs Threshold",
-                    xaxis_title="Threshold",
-                    yaxis_title="Score",
-                    template=PLOTLY_TEMPLATE,
-                )
-                st.plotly_chart(fig_thr, use_container_width=True)
-
+                thr_df = pd.DataFrame(threshold_analysis(y_test, y_prob))
+                fig_t  = go.Figure()
+                for cn, cl in zip(["accuracy","precision","recall","f1"], DISC[:4]):
+                    fig_t.add_trace(go.Scatter(x=thr_df["threshold"], y=thr_df[cn],
+                                               name=cn.capitalize(), mode="lines",
+                                               line=dict(color=cl)))
+                fig_t.update_layout(title="Métricas vs Threshold",
+                                     xaxis_title="Threshold", yaxis_title="Score",
+                                     template=TMPL)
+                st.plotly_chart(fig_t, width="stretch")
                 opt = optimize_threshold(y_test, y_prob, metric="f1")
-                st.info(
-                    f"Threshold óptimo para F1: **{opt['optimal_threshold']}** "
-                    f"(F1={opt['best_score']:.4f})"
-                )
+                st.info(f"🎯 Threshold óptimo (F1): **{opt['optimal_threshold']}** "
+                        f"— F1={opt['best_score']:.4f}")
 
         elif pt == "regression":
-            model_names = df["Model"].tolist()
-            sel = st.selectbox(
-                "Selecciona un modelo:",
-                model_names,
-                key="detail_selected_regression_model",
-            )
+            sel = st.selectbox("Modelo:", df["Model"].tolist(), key="det_reg_sel")
             row = df[df["Model"] == sel].iloc[0]
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("R²", f"{row['R²']:.4f}")
-            c2.metric("RMSE", f"{row['RMSE']:.4f}")
-            c3.metric("MAE", f"{row['MAE']:.4f}")
-            c4.metric("CV Mean (R²)", f"{row['CV Mean (R²)']:.4f} ± {row['CV Std']:.4f}")
+            if row["R²"] is None:
+                st.error(f"❌ El modelo **{sel}** falló: `{row.get('_error','')}`")
+                st.stop()
 
-            cv_scores = row["CV Scores"]
-            if cv_scores is not None and len(cv_scores) > 0:
-                fold_df = pd.DataFrame({
-                    "Fold": [f"Fold {i+1}" for i in range(len(cv_scores))],
-                    "R²": cv_scores,
-                })
-                fig_cv = px.bar(
-                    fold_df,
-                    x="Fold",
-                    y="R²",
-                    color="R²",
-                    color_continuous_scale=COLOR_SCALE_MAIN,
-                    title=f"K-Fold CV | Mean={row['CV Mean (R²)']:.4f}",
-                    template=PLOTLY_TEMPLATE,
-                )
-                st.plotly_chart(fig_cv, use_container_width=True)
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("R²",   fmt(row["R²"]))
+            c2.metric("RMSE", fmt(row["RMSE"]))
+            c3.metric("MAE",  fmt(row["MAE"]))
+            c4.metric("CV Mean", f"{fmt(row['CV Mean (R²)'])} ± {fmt(row['CV Std'])}")
+
+            cv_s = row["CV Scores"]
+            if cv_s and len(cv_s) > 0:
+                fdf = pd.DataFrame({"Fold":[f"Fold {i+1}" for i in range(len(cv_s))],"R²":cv_s})
+                st.plotly_chart(px.bar(fdf, x="Fold", y="R²", color="R²",
+                    color_continuous_scale=C_MAIN, template=TMPL,
+                    title=f"K-Fold | Mean={fmt(row['CV Mean (R²)'])}"),
+                    width="stretch")
 
         elif pt == "timeseries":
-            model_names = df["Model"].tolist()
-            sel = st.selectbox(
-                "Selecciona un modelo:",
-                model_names,
-                key="detail_selected_timeseries_model",
-            )
+            sel = st.selectbox("Modelo:", df["Model"].tolist(), key="det_ts_sel")
             row = df[df["Model"] == sel].iloc[0]
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("RMSE",    fmt(row["RMSE"]))
+            c2.metric("MAE",     fmt(row["MAE"]))
+            c3.metric("MSE",     fmt(row["MSE"]))
+            c4.metric("MAPE (%)",f"{row['MAPE (%)']:.2f}" if row["MAPE (%)"] and pd.notna(row["MAPE (%)"]) else "N/A")
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("RMSE", f"{row['RMSE']:.4f}" if pd.notna(row["RMSE"]) else "N/A")
-            c2.metric("MAE", f"{row['MAE']:.4f}" if pd.notna(row["MAE"]) else "N/A")
-            c3.metric("MSE", f"{row['MSE']:.4f}" if pd.notna(row["MSE"]) else "N/A")
-            c4.metric("MAPE", f"{row['MAPE (%)']:.2f}%" if pd.notna(row["MAPE (%)"]) else "N/A")
-
-            if row.get("_predictions") is not None and len(row["_predictions"]) > 0:
-                train = res["train"]
-                test = res["test"]
-
+            if row.get("_predictions") is not None:
+                train, test = res["train"], res["test"]
                 fig_f = go.Figure()
-                fig_f.add_trace(go.Scatter(
-                    y=list(train),
-                    name="Entrenamiento",
-                    line=dict(color=DISCRETE_COLORS[8]),
-                ))
-                fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train) + len(test))),
-                    y=list(test),
-                    name="Real",
-                    line=dict(color=DISCRETE_COLORS[2], width=2),
-                ))
-                fig_f.add_trace(go.Scatter(
-                    x=list(range(len(train), len(train) + len(test))),
-                    y=row["_predictions"],
-                    name="Predicción",
-                    line=dict(color=DISCRETE_COLORS[0], dash="dash", width=2),
-                ))
-                fig_f.update_layout(
-                    title=f"Forecast: {sel}",
-                    xaxis_title="Tiempo",
-                    yaxis_title="Valor",
-                    template=PLOTLY_TEMPLATE,
-                )
-                st.plotly_chart(fig_f, use_container_width=True)
+                fig_f.add_trace(go.Scatter(y=list(train), name="Train", line=dict(color=DISC[8])))
+                fig_f.add_trace(go.Scatter(x=list(range(len(train),len(train)+len(test))),
+                    y=list(test), name="Real", line=dict(color=DISC[2], width=2)))
+                fig_f.add_trace(go.Scatter(x=list(range(len(train),len(train)+len(test))),
+                    y=row["_predictions"], name="Predicción",
+                    line=dict(color=DISC[0], dash="dash", width=2)))
+                fig_f.update_layout(title=f"Forecast: {sel}", template=TMPL)
+                st.plotly_chart(fig_f, width="stretch")
 
 
-# =========================
-# TAB 5: MEJOR MODELO
-# =========================
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 5 · MEJOR MODELO                                   ║
+# ╚══════════════════════════════════════════════════════════╝
 with tab_best:
-    st.header("Mejor Modelo")
+    st.header("🥇 Mejor Modelo")
 
     if not st.session_state.benchmark_run:
-        st.warning("Ejecuta el benchmarking primero.")
+        st.warning("⚠️ Ejecuta el benchmarking primero.")
     else:
-        res = st.session_state.results
-        df = res["results"]
-        pt = res["problem_type"]
-
+        res  = st.session_state.results
+        df   = res["results"]
+        pt   = res["problem_type"]
         best = df.iloc[0]
 
-        if pt == "classification":
-            primary_metric = "AUC-ROC"
-            primary_value = best["AUC-ROC"]
-        elif pt == "regression":
-            primary_metric = "R²"
-            primary_value = best["R²"]
-        else:
-            primary_metric = "RMSE"
-            primary_value = best["RMSE"]
+        pm_map = {"classification":("AUC-ROC","AUC-ROC"),
+                  "regression":    ("R²","R²"),
+                  "timeseries":    ("RMSE","RMSE")}
+        pm_col, pm_lbl = pm_map[pt]
+        pm_val = best[pm_col]
 
         st.markdown(f"""
         <div class="best-model-banner">
-            <h2>{best['Model']}</h2>
-            <h3>{primary_metric}: {primary_value:.4f}</h3>
-            <p>Mejor modelo según la métrica principal</p>
-        </div>
-        """, unsafe_allow_html=True)
+            <h2>🏆 {best['Model']}</h2>
+            <h3>{pm_lbl}: {fmt(pm_val)}</h3>
+            <p>Mejor modelo según la métrica principal del benchmarking</p>
+        </div>""", unsafe_allow_html=True)
 
-        st.subheader("Métricas del Mejor Modelo")
-        display_cols = [c for c in df.columns if not c.startswith("_")]
-        best_display = df[display_cols].iloc[0:1]
-        st.dataframe(style_color_table(best_display), use_container_width=True)
+        dcols = [c for c in df.columns if not c.startswith("_")]
+        show_df(style_table(df[dcols].iloc[0:1]))
 
         if pt == "classification":
-            st.subheader("Comparación Radar")
-            metrics_radar = ["Accuracy", "Precision", "Recall", "F1-Score", "AUC-ROC"]
-            display_df = df[[c for c in df.columns if not c.startswith("_")]].copy()
-            top_n = min(5, len(display_df))
+            st.subheader("🕸️ Radar Comparativo (Top 5)")
+            met_r = ["Accuracy","Precision","Recall","F1-Score","AUC-ROC"]
+            top5  = df[dcols].head(5)
+            fig_r = go.Figure()
+            for i, (_, row) in enumerate(top5.iterrows()):
+                vals = [row[m] if row[m] is not None else 0 for m in met_r] + \
+                       [row[met_r[0]] if row[met_r[0]] is not None else 0]
+                fig_r.add_trace(go.Scatterpolar(r=vals, theta=met_r+[met_r[0]],
+                    name=row["Model"], line=dict(color=DISC[i % len(DISC)])))
+            fig_r.update_layout(polar=dict(radialaxis=dict(range=[0,1])),
+                                 title="Top 5 — Comparación Multimétrica", template=TMPL)
+            st.plotly_chart(fig_r, width="stretch")
 
-            fig_radar = go.Figure()
-            for i, row in display_df.head(top_n).iterrows():
-                values = [row[m] for m in metrics_radar]
-                values.append(values[0])
-                fig_radar.add_trace(go.Scatterpolar(
-                    r=values,
-                    theta=metrics_radar + [metrics_radar[0]],
-                    name=row["Model"],
-                    line=dict(color=DISCRETE_COLORS[i % len(DISCRETE_COLORS)]),
-                ))
-            fig_radar.update_layout(
-                template=PLOTLY_TEMPLATE,
-                polar=dict(radialaxis=dict(range=[0.0, 1.0])),
-                title="Comparación Multimétrica (Top 5 Modelos)",
-            )
-            st.plotly_chart(fig_radar, use_container_width=True)
+        st.subheader("💡 Recomendaciones")
+        st.success(f"✅ Se recomienda usar **{best['Model']}** para este problema.")
 
-        st.subheader("Recomendaciones")
-        st.success(f"Se recomienda usar **{best['Model']}** para este problema.")
-
-        if pt == "classification":
-            if primary_value >= 0.95:
-                st.info("Rendimiento excelente. El modelo es altamente discriminativo.")
-            elif primary_value >= 0.85:
-                st.info("Buen rendimiento. Considera optimizar hiperparámetros para mejorar.")
-            else:
-                st.warning("Rendimiento moderado. Considera más datos o feature engineering.")
-
-        elif pt == "regression":
-            if primary_value >= 0.85:
-                st.info("El modelo explica más del 85% de la varianza. Excelente ajuste.")
-            elif primary_value >= 0.70:
-                st.info("Buen ajuste. Prueba con más features o transformaciones.")
-            else:
-                st.warning("R² bajo. El modelo puede estar subajustando (underfitting).")
-
+        if pt == "classification" and pm_val is not None:
+            if pm_val >= 0.95:   st.info("🌟 AUC ≥ 0.95: Rendimiento excelente.")
+            elif pm_val >= 0.85: st.info("👍 AUC ≥ 0.85: Buen rendimiento.")
+            else:                st.warning("⚠️ AUC < 0.85: Considera más datos o feature engineering.")
+        elif pt == "regression" and pm_val is not None:
+            if pm_val >= 0.85:   st.info("🌟 R² ≥ 0.85: Excelente ajuste.")
+            elif pm_val >= 0.70: st.info("👍 R² ≥ 0.70: Buen ajuste.")
+            else:                st.warning("⚠️ R² < 0.70: El modelo puede estar subajustando.")
         elif pt == "timeseries":
             mape = best.get("MAPE (%)")
-            if pd.notna(mape) and mape < 5:
-                st.info("MAPE < 5%: Forecasts muy precisos.")
-            elif pd.notna(mape) and mape < 10:
-                st.info("MAPE < 10%: Forecasts aceptables.")
-            else:
-                st.warning("MAPE alto. Considera más datos o ajustar períodos estacionales.")
+            if mape and pd.notna(mape) and mape < 5:    st.info("🌟 MAPE < 5%: Forecasts muy precisos.")
+            elif mape and pd.notna(mape) and mape < 10: st.info("👍 MAPE < 10%: Forecasts aceptables.")
+            else:                                        st.warning("⚠️ MAPE alto. Ajusta períodos estacionales.")
 
-        st.subheader("Próximos Pasos Sugeridos")
+        st.subheader("🚀 Próximos Pasos")
         st.markdown("""
-        1. **Optimización de hiperparámetros**: Usa Grid Search o Random Search con Optuna.
-        2. **Interpretabilidad**: Analiza SHAP values y feature importance.
-        3. **Validación adicional**: Prueba con datos externos para confirmar generalización.
-        4. **Monitoreo**: Implementa detección de model drift en producción.
-        5. **AutoML**: Considera bibliotecas como AutoSklearn o H2O.ai para automatizar.
+        1. **Optimización de hiperparámetros** — Grid Search / Random Search / Optuna
+        2. **Interpretabilidad** — SHAP values y feature importance
+        3. **Validación adicional** — Prueba con datos externos independientes
+        4. **Monitoreo en producción** — Detecta model drift y degradación
+        5. **AutoML** — Considera AutoSklearn o H2O.ai para automatizar la selección
         """)
