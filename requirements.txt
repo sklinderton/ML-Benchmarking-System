@@ -1,4 +1,4 @@
-streamlit>=1.32.0
+﻿streamlit>=1.32.0
 pandas>=2.0.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
@@ -9,4 +9,7 @@ tensorflow>=2.13.0
 xgboost>=2.0.0
 scipy>=1.11.0
 matplotlib>=3.7.0
-jupyter>=1.0.0
+seaborn>=0.12.0
+mlxtend>=0.24.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0

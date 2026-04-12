@@ -397,12 +397,15 @@ for k, v in _defaults.items():
 # ══════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════
-tab_explore, tab_config, tab_bench, tab_detail, tab_best = st.tabs([
+tab_explore, tab_config, tab_bench, tab_detail, tab_best, tab_wm, tab_nn, tab_ar = st.tabs([
     "🔍 Exploración & EDA",
     "⚙️ Configuración de Modelos",
     "🏆 Benchmarking",
     "📈 Resultados Detallados",
     "🥇 Mejor Modelo",
+    "🌐 Web Mining",
+    "🧠 Redes Neuronales",
+    "🔗 Reglas de Asociación",
 ])
 
 
@@ -1313,3 +1316,690 @@ with tab_best:
         4. **Monitoreo en producción** — Detecta model drift y degradación
         5. **AutoML** — Considera AutoSklearn o H2O.ai para automatizar la selección
         """)
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 6 · WEB MINING                                     ║
+# ╚══════════════════════════════════════════════════════════╝
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 6 · WEB MINING                                     ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_wm:
+    st.header("🌐 Web Mining — Extracción y Análisis de Datos Web")
+    st.markdown("""
+    Extracción real de datos de e-commerce con **BeautifulSoup + requests**, 
+    limpieza con **expresiones regulares** y análisis estadístico completo.
+    El sistema soporta scraping real con paginación y dataset sintético offline.
+    """)
+
+    from mlbenchmark.web_mining import WebMiner
+
+    # ── Configuración ─────────────────────────────────────────
+    with st.expander("⚙️ Configuración del Scraping", expanded=True):
+        col_wm0, col_wm1, col_wm2 = st.columns(3)
+        wm_source = col_wm0.radio("Fuente de datos:",
+            ["Dataset sintético (offline)", "Scraping real (requiere internet)"],
+            key="wm_source_radio", label_visibility="collapsed", horizontal=False)
+        wm_pages   = col_wm1.slider("Páginas a extraer:", 1, 5, 2, key="wm_pages_slider")
+        wm_delay   = col_wm2.slider("Delay entre peticiones (s):", 0.5, 3.0, 1.0, 0.5,
+                                     key="wm_delay_slider")
+
+    run_wm = st.button("🚀 Ejecutar Web Mining", type="primary",
+                        use_container_width=True, key="btn_wm_run")
+
+    if run_wm:
+        with st.spinner("⏳ Extrayendo y procesando datos..."):
+            miner = WebMiner(delay=wm_delay)
+            if "sintético" in wm_source:
+                df_wm = miner.get_fallback_dataset()
+                st.session_state["wm_df"]  = df_wm
+                st.session_state["wm_src"] = "Dataset Sintético Outdoor (120 productos)"
+                st.success(f"✅ Dataset sintético cargado — {len(df_wm)} productos.")
+            else:
+                with st.status("Scraping en progreso...", expanded=True) as status:
+                    st.write("📡 Conectando al servidor...")
+                    df_wm, log = miner.scrape_with_log(max_pages=wm_pages)
+                    for msg in log:
+                        st.write(msg)
+                    if len(df_wm) == 0:
+                        status.update(label="⚠️ Sin conexión — cargando dataset sintético",
+                                      state="error")
+                        df_wm = miner.get_fallback_dataset()
+                        st.session_state["wm_src"] = "Dataset Sintético (fallback)"
+                    else:
+                        status.update(label=f"✅ Scraping completado", state="complete")
+                        st.session_state["wm_src"] = f"Scraping real ({len(df_wm)} productos)"
+                st.session_state["wm_df"] = df_wm
+
+    if "wm_df" not in st.session_state:
+        st.info("👆 Presiona **Ejecutar Web Mining** para comenzar.")
+        st.markdown("""
+        **El módulo de Web Mining:**
+        - Descarga HTML real con `requests` + headers de navegador
+        - Parsea estructura DOM con `BeautifulSoup`
+        - Extrae: nombre, precio original, precio con descuento, estado
+        - Limpia precios con expresiones regulares (`re.sub`)
+        - Pagina automáticamente hasta N páginas
+        - Fallback a dataset sintético cuando el sitio no responde
+        """)
+    else:
+        df_wm  = st.session_state["wm_df"]
+        wm_src = st.session_state.get("wm_src", "Dataset")
+        miner  = WebMiner()
+        stats  = miner.summary_stats(df_wm)
+
+        # ── KPIs ─────────────────────────────────────────────
+        st.caption(f"**Fuente:** {wm_src}")
+        k1,k2,k3,k4,k5,k6 = st.columns(6)
+        k1.metric("📦 Productos",       f"{stats['total_productos']:,}")
+        k2.metric("🏷️ Con Descuento",   f"{stats['con_descuento']} ({stats['tasa_descuento_%']}%)")
+        k3.metric("🚫 Agotados",         stats['agotados'])
+        k4.metric("💲 Precio Medio",    f"${stats['precio_promedio']:.2f}")
+        k5.metric("📉 Precio Mín",      f"${stats['precio_minimo']:.2f}")
+        k6.metric("📈 Precio Máx",      f"${stats['precio_maximo']:.2f}")
+
+        # ── Datos crudos y limpios ────────────────────────────
+        tab_raw, tab_clean, tab_viz, tab_regex = st.tabs(
+            ["📄 Datos Extraídos", "🧹 Limpieza con Regex", "📊 Visualizaciones", "🔤 Demo Regex"])
+
+        with tab_raw:
+            cols_show = [c for c in df_wm.columns if not c.startswith("_")]
+            n_show = st.slider("Filas a mostrar:", 10, min(200, len(df_wm)), 30,
+                                key="wm_rows")
+            show_df(df_wm[cols_show].head(n_show))
+            st.caption(f"Total: {len(df_wm)} productos · {len(cols_show)} columnas")
+
+        with tab_clean:
+            st.markdown("### Proceso de Limpieza con Expresiones Regulares")
+            st.markdown("""
+            El precio original viene como texto crudo del HTML, por ejemplo:
+            `"\\nPrecio original\\n\\n            $59.90\\n          "`.
+            
+            Se aplican estos patrones regex en orden:
+            """)
+            reglas_regex = [
+                (r"(?i)precio\s+(original|actual)", "Elimina texto 'Precio original/actual'"),
+                (r"[$,\\n\\r\\t]", "Elimina símbolos $, comas y espacios en blanco"),
+                (r"^\\s+|\\s+$", "Elimina espacios al inicio y final (strip)"),
+            ]
+            for pat, desc in reglas_regex:
+                st.code(f're.sub(r"{pat}", "", texto)  # {desc}', language="python")
+
+            # Mostrar ejemplo concreto con datos reales
+            if "PrecioOriginal" in df_wm.columns:
+                st.markdown("**Estadísticas de precios tras limpieza:**")
+                col_p = "PrecioFinal" if "PrecioFinal" in df_wm.columns else "PrecioOriginal"
+                price_stats = df_wm[col_p].describe().round(2)
+                show_df(price_stats.to_frame("Precio ($)"))
+
+            if "TieneDescuento" in df_wm.columns and df_wm["TieneDescuento"].sum() > 0:
+                st.markdown("**Productos con descuento (muestra):**")
+                disc_sample = df_wm[df_wm["TieneDescuento"]==1][
+                    [c for c in ["Nombre","Categoria","PrecioOriginal",
+                                  "PrecioDescuento","PctDescuento"] if c in df_wm.columns]
+                ].head(10)
+                show_df(disc_sample)
+
+        with tab_viz:
+            col_p = "PrecioFinal" if "PrecioFinal" in df_wm.columns else "PrecioOriginal"
+
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                fig_h = px.histogram(df_wm, x=col_p, nbins=30,
+                                      title="Distribución de Precios ($)",
+                                      color_discrete_sequence=[DISC[0]], template=TMPL)
+                fig_h.update_layout(xaxis_title="Precio ($)", yaxis_title="Frecuencia")
+                st.plotly_chart(fig_h, width="stretch")
+
+            with col_v2:
+                if "TieneDescuento" in df_wm.columns:
+                    vc = df_wm["TieneDescuento"].map({1:"Con Descuento",0:"Precio Normal"})\
+                           .value_counts().reset_index()
+                    vc.columns = ["Estado","Conteo"]
+                    fig_pie = px.pie(vc, values="Conteo", names="Estado",
+                                     title="Distribución de Descuentos",
+                                     color_discrete_sequence=DISC, template=TMPL)
+                    st.plotly_chart(fig_pie, width="stretch")
+
+            if "Categoria" in df_wm.columns:
+                cat_g = df_wm.groupby("Categoria").agg(
+                    Productos=(col_p,"count"),
+                    Precio_Medio=(col_p,"mean"),
+                    Precio_Max=(col_p,"max")
+                ).round(2).reset_index().sort_values("Precio_Medio", ascending=False)
+
+                fig_cat = px.bar(cat_g, x="Categoria", y="Precio_Medio",
+                                  color="Precio_Medio", color_continuous_scale=C_MAIN,
+                                  text="Productos", title="Precio Medio por Categoría",
+                                  template=TMPL)
+                fig_cat.update_traces(textposition="outside")
+                st.plotly_chart(fig_cat, width="stretch")
+
+                # Top 10 más caros
+                top10 = df_wm.nlargest(10, col_p)[
+                    [c for c in ["Nombre","Categoria","PrecioOriginal",col_p]
+                     if c in df_wm.columns]]
+                st.subheader("🏆 Top 10 Productos más Caros")
+                show_df(top10)
+
+            if "Marca" in df_wm.columns:
+                marca_g = df_wm.groupby("Marca")[col_p].mean().round(2)\
+                               .sort_values(ascending=False).reset_index()
+                marca_g.columns = ["Marca","Precio Medio ($)"]
+                fig_marca = px.bar(marca_g.head(10), x="Marca", y="Precio Medio ($)",
+                                    color="Precio Medio ($)",
+                                    color_continuous_scale=C_MAIN,
+                                    title="Top 10 Marcas por Precio Medio",
+                                    template=TMPL)
+                st.plotly_chart(fig_marca, width="stretch")
+
+            if "PctDescuento" in df_wm.columns and df_wm["PctDescuento"].sum() > 0:
+                fig_disc = px.histogram(df_wm[df_wm["PctDescuento"]>0],
+                                         x="PctDescuento", nbins=20,
+                                         title="Distribución del % de Descuento",
+                                         color_discrete_sequence=[DISC[2]], template=TMPL)
+                fig_disc.update_layout(xaxis_title="Descuento (%)")
+                st.plotly_chart(fig_disc, width="stretch")
+
+        with tab_regex:
+            st.markdown("### 🔤 Motor de Extracción con Expresiones Regulares")
+            st.markdown("Prueba patrones regex sobre los nombres/textos extraídos.")
+
+            col_re1, col_re2 = st.columns([2,1])
+            sample_text = col_re1.text_area(
+                "Texto de muestra:",
+                value="\n".join(df_wm["Nombre"].head(8).tolist()) if "Nombre" in df_wm.columns
+                      else "Ejemplo de texto scrapeado",
+                height=200, key="wm_regex_text")
+            pattern = col_re2.text_input("Patrón regex:", value=r"\b[A-Z][a-z]+\b",
+                                           key="wm_regex_pat")
+            flag_i  = col_re2.checkbox("Ignorar mayúsculas (IGNORECASE)", True, key="wm_flag_i")
+            flag_m  = col_re2.checkbox("Multilínea (MULTILINE)", False, key="wm_flag_m")
+
+            if st.button("🔍 Aplicar Regex", key="btn_regex"):
+                import re
+                flags = 0
+                if flag_i: flags |= re.IGNORECASE
+                if flag_m: flags |= re.MULTILINE
+                try:
+                    matches = re.findall(pattern, sample_text, flags)
+                    st.success(f"✅ {len(matches)} coincidencias encontradas:")
+                    st.code("\n".join(str(m) for m in matches[:50]))
+                    if len(matches) > 50:
+                        st.caption(f"… y {len(matches)-50} más.")
+                except re.error as e:
+                    st.error(f"Patrón inválido: {e}")
+
+            st.markdown("**Patrones de ejemplo útiles:**")
+            ejemplos = {
+                r"\$[\d,]+\.?\d*":          "Precios (ej. $59.90)",
+                r"\b[A-Z][a-z]+ [A-Z][a-z]+\b": "Nombres propios (dos palabras)",
+                r"\d{1,3}(?:,\d{3})*(?:\.\d{2})?": "Números con formato",
+                r"https?://[^\s]+":          "URLs",
+                r"\b\w{10,}\b":              "Palabras largas (≥ 10 letras)",
+            }
+            for pat, desc in ejemplos.items():
+                st.code(f'r"{pat}"  →  {desc}', language="python")
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 7 · REDES NEURONALES                               ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_nn:
+    st.header("🧠 Redes Neuronales — 5 Arquitecturas")
+    st.markdown("""
+    Benchmarking de **5 tipos de redes neuronales** entrenadas sobre los productos
+    del Web Mining para predecir descuento (*clasificación*) o precio (*regresión*).
+    """)
+
+    from mlbenchmark.neural_networks import (
+        benchmark_neural_networks, ARCHITECTURES_INFO, _check_keras)
+
+    # ── Descripción de arquitecturas ──────────────────────────
+    with st.expander("📐 Las 5 Arquitecturas Implementadas"):
+        for name, info in ARCHITECTURES_INFO.items():
+            c1, c2 = st.columns([1, 3])
+            c1.markdown(f"**{name}**")
+            c2.markdown(
+                f"🏗️ *{info['Tipo']}* · 🔧 {info['Framework']}  \n"
+                f"`{info['Capas']}`  \n"
+                f"*Regularización:* {info['Regularización']} · *Uso:* {info['Uso']}")
+            st.divider()
+
+    if not _check_keras():
+        st.warning("⚠️ TensorFlow no detectado — se usarán 5 variantes de MLP sklearn como "
+                   "fallback. Para activar Keras: `uv pip install tensorflow`")
+
+    # ── Configuración ─────────────────────────────────────────
+    st.subheader("⚙️ Configuración")
+    col_n1, col_n2, col_n3, col_n4 = st.columns(4)
+
+    # Usamos prefijo "_nn_" para evitar conflicto con session_state
+    nn_task_sel  = col_n1.selectbox("Tarea:",
+        ["Clasificación — TieneDescuento", "Regresión — PrecioFinal"],
+        key="nn_task_sel")
+    nn_epochs    = col_n2.slider("Épocas (Keras):", 10, 150, 40, 5, key="nn_epochs_sl")
+    nn_testsize  = col_n3.slider("Test size (%):", 10, 40, 20, 5, key="nn_test_sl") / 100
+    nn_dataset   = col_n4.selectbox("Dataset:",
+        ["Productos Web Mining", "Breast Cancer (clasificación)", "California Housing (regresión)"],
+        key="nn_dataset_sel")
+
+    run_nn = st.button("🚀 Entrenar las 5 Redes Neuronales", type="primary",
+                        use_container_width=True, key="btn_nn_run")
+
+    if run_nn:
+        # Determinar task
+        _task = "classification" if "Clasificación" in nn_task_sel else "regression"
+
+        with st.spinner("⏳ Entrenando... (1-5 min según hardware y épocas)"):
+            try:
+                from sklearn.model_selection import train_test_split
+                from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+                # ── Fuente de datos ───────────────────────────
+                if "Breast Cancer" in nn_dataset:
+                    from sklearn.datasets import load_breast_cancer
+                    X_raw, y_raw = load_breast_cancer(return_X_y=True)
+                    _task = "classification"
+
+                elif "California" in nn_dataset:
+                    from sklearn.datasets import fetch_california_housing
+                    data = fetch_california_housing()
+                    X_raw, y_raw = data.data, data.target
+                    _task = "regression"
+
+                else:
+                    # Web Mining dataset
+                    if "wm_df" not in st.session_state:
+                        st.error("⚠️ Primero ejecuta el **Web Mining** (Tab 6).")
+                        st.stop()
+
+                    df_wm_nn = st.session_state["wm_df"].copy()
+                    _target  = ("TieneDescuento" if _task == "classification"
+                                else "PrecioFinal")
+
+                    if _target not in df_wm_nn.columns:
+                        st.error(f"Columna '{_target}' no encontrada. "
+                                 "Ejecuta Web Mining primero.")
+                        st.stop()
+
+                    # Encoding categóricas
+                    for col in df_wm_nn.select_dtypes(include="object").columns:
+                        if col != "Nombre":
+                            df_wm_nn[col] = LabelEncoder().fit_transform(
+                                df_wm_nn[col].astype(str))
+
+                    num_cols = df_wm_nn.select_dtypes(include=[float, int]).columns.tolist()
+                    feat_cols = [c for c in num_cols if c != _target]
+                    X_raw = df_wm_nn[feat_cols].fillna(0).values
+                    y_raw = df_wm_nn[_target].values
+
+                # ── Preprocesamiento ──────────────────────────
+                sc = StandardScaler()
+                X_s = sc.fit_transform(X_raw)
+
+                X_tr, X_te, y_tr, y_te = train_test_split(
+                    X_s, y_raw, test_size=nn_testsize, random_state=42,
+                    stratify=y_raw if _task == "classification" else None)
+
+                # ── Benchmarking ──────────────────────────────
+                df_nn_res = benchmark_neural_networks(
+                    X_tr, X_te, y_tr, y_te,
+                    task=_task,
+                    epochs=nn_epochs,
+                    random_state=42,
+                )
+
+                # Guardar con claves que NO conflicten con widgets
+                st.session_state["_nn_results"] = df_nn_res
+                st.session_state["_nn_task"]    = _task
+                st.session_state["_nn_dataset"] = nn_dataset
+                st.session_state["_nn_n_train"] = len(X_tr)
+                st.session_state["_nn_n_test"]  = len(X_te)
+                st.success("✅ ¡Benchmarking de redes neuronales completado!")
+
+            except Exception as e:
+                import traceback
+                st.error(f"❌ {e}")
+                st.code(traceback.format_exc())
+
+    if "_nn_results" not in st.session_state:
+        st.info("👆 Configura y presiona **Entrenar las 5 Redes Neuronales**.")
+    else:
+        df_nn_res = st.session_state["_nn_results"]
+        _task     = st.session_state["_nn_task"]
+
+        st.subheader("📊 Resultados Comparativos")
+        st.caption(
+            f"Dataset: **{st.session_state['_nn_dataset']}** · "
+            f"Train: {st.session_state['_nn_n_train']} · "
+            f"Test: {st.session_state['_nn_n_test']}")
+
+        # Tabla limpia (sin columnas _error)
+        display_nn = df_nn_res.drop(columns=["_error"], errors="ignore").copy()
+        show_df(display_nn)
+
+        # ── Gráfico comparativo ───────────────────────────────
+        st.subheader("📈 Comparación Visual")
+
+        if _task == "classification":
+            avail_metrics = [m for m in ["Accuracy","F1-Score","AUC-ROC"]
+                             if m in display_nn.columns]
+            nn_metric = st.selectbox("Métrica:", avail_metrics, key="nn_metric_sel")
+            df_plot = display_nn[display_nn[nn_metric].notna()].copy()
+
+            if not df_plot.empty:
+                fig_nn = px.bar(df_plot, x="Modelo", y=nn_metric,
+                                color=nn_metric, color_continuous_scale=C_MAIN,
+                                title=f"Redes Neuronales — {nn_metric}",
+                                text=nn_metric, template=TMPL)
+                fig_nn.update_traces(texttemplate="%{text:.4f}", textposition="outside")
+                fig_nn.update_layout(xaxis_tickangle=-20)
+                st.plotly_chart(fig_nn, width="stretch")
+
+            # Radar
+            met_r = [m for m in ["Accuracy","F1-Score","AUC-ROC"]
+                     if m in display_nn.columns]
+            df_rad = display_nn.dropna(subset=met_r[:1])
+            if len(df_rad) > 1 and len(met_r) >= 2:
+                st.subheader("🕸️ Radar Comparativo")
+                fig_rad = go.Figure()
+                for i, (_, row) in enumerate(df_rad.iterrows()):
+                    vals = [float(row.get(m, 0) or 0) for m in met_r]
+                    vals_closed = vals + [vals[0]]
+                    theta_closed = met_r + [met_r[0]]
+                    fig_rad.add_trace(go.Scatterpolar(
+                        r=vals_closed, theta=theta_closed,
+                        name=row["Modelo"],
+                        line=dict(color=DISC[i % len(DISC)])))
+                fig_rad.update_layout(
+                    polar=dict(radialaxis=dict(range=[0,1])),
+                    title="Comparación Multimétrica", template=TMPL)
+                st.plotly_chart(fig_rad, width="stretch")
+
+        else:  # regression
+            met_reg = [m for m in ["R²","RMSE","MAE"] if m in display_nn.columns]
+            df_plot = display_nn.dropna(subset=["R²"] if "R²" in display_nn.columns else met_reg[:1])
+
+            if not df_plot.empty and "R²" in df_plot.columns:
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    fig_r2 = px.bar(df_plot, x="Modelo", y="R²",
+                                    color="R²", color_continuous_scale=C_MAIN,
+                                    title="R² por Arquitectura", text="R²", template=TMPL)
+                    fig_r2.update_traces(texttemplate="%{text:.4f}", textposition="outside")
+                    st.plotly_chart(fig_r2, width="stretch")
+                with cc2:
+                    if "RMSE" in df_plot.columns:
+                        fig_rm = px.bar(df_plot, x="Modelo", y="RMSE",
+                                        color="RMSE", color_continuous_scale=C_REV,
+                                        title="RMSE por Arquitectura", text="RMSE",
+                                        template=TMPL)
+                        fig_rm.update_traces(texttemplate="%{text:.4f}", textposition="outside")
+                        st.plotly_chart(fig_rm, width="stretch")
+
+        # ── Sección Autoencoder ───────────────────────────────
+        ae_row = display_nn[display_nn["Modelo"].str.contains("Autoencoder", na=False)]
+        if not ae_row.empty:
+            st.subheader("🔍 Autoencoder — Detección de Anomalías")
+            row_ae = ae_row.iloc[0]
+            ca1,ca2,ca3,ca4 = st.columns(4)
+            ca1.metric("Error Reconstrucción",
+                       f"{row_ae.get('Error Reconstrucción (medio)', 'N/A'):.6f}"
+                       if row_ae.get('Error Reconstrucción (medio)') is not None else "N/A")
+            ca2.metric("Threshold",
+                       f"{row_ae.get('Threshold', 'N/A'):.6f}"
+                       if row_ae.get('Threshold') is not None else "N/A")
+            ca3.metric("Anomalías detectadas",
+                       row_ae.get("Anomalías detectadas", "N/A"))
+            ca4.metric("% Anomalías",
+                       f"{row_ae.get('% Anomalías', 0):.2f}%")
+            st.info("El Autoencoder aprende la distribución normal. Las muestras con alto "
+                    "error de reconstrucción (> threshold) se etiquetan como anomalías "
+                    "(p.ej. precios atípicos o características inusuales).")
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 8 · REGLAS DE ASOCIACIÓN                           ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_ar:
+    st.header("🔗 Reglas de Asociación — Market Basket Analysis")
+    st.markdown("""
+    Minería de **patrones frecuentes de compra** con el algoritmo **Apriori** (mlxtend).
+    Genera reglas *antecedente → consecuente* para recomendaciones de cross-selling.
+    """)
+
+    from mlbenchmark.association_rules import (
+        AssociationRulesMiner, generate_synthetic_transactions, load_groceries_dataset)
+
+    # ── Marco teórico rápido ──────────────────────────────────
+    with st.expander("📚 Conceptos Clave"):
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("Soporte",    "P(A ∩ B)",    "Frecuencia del itemset")
+        cc2.metric("Confianza",  "P(B|A)",       "P de B dado A")
+        cc3.metric("Lift",       "conf / P(B)", "> 1 → asociación real")
+        st.markdown("""
+        - **Soporte mínimo:** filtra itemsets poco frecuentes
+        - **Confianza mínima:** filtra reglas poco fiables
+        - **Lift > 1:** confirma que la regla no es aleatoria
+        """)
+
+    # ── Fuente y parámetros ───────────────────────────────────
+    col_s1, col_s2 = st.columns([2,1])
+    ar_source = col_s1.radio("Fuente de transacciones:",
+        ["Productos outdoor (Web Mining)", "Dataset Groceries (público)"],
+        key="ar_source_radio", label_visibility="collapsed", horizontal=True)
+    ar_n_trans = col_s2.slider("Transacciones sintéticas:", 500, 5000, 2000, 100,
+                                key="ar_n_trans_sl",
+                                help="Solo para fuente de productos outdoor")
+
+    col_p1, col_p2, col_p3 = st.columns(3)
+    ar_min_sup  = col_p1.slider("Soporte mínimo:",  0.005, 0.20, 0.03, 0.005,
+                                 format="%.3f", key="ar_sup_sl")
+    ar_min_conf = col_p2.slider("Confianza mínima:", 0.05, 0.90, 0.20, 0.05, key="ar_conf_sl")
+    ar_min_lift = col_p3.slider("Lift mínimo:",      1.0,  5.0,  1.0,  0.1,  key="ar_lift_sl")
+
+    run_ar = st.button("🚀 Ejecutar Análisis de Reglas de Asociación",
+                        type="primary", use_container_width=True, key="btn_ar_run")
+
+    if run_ar:
+        with st.spinner("⏳ Calculando itemsets y reglas..."):
+            try:
+                ar_miner = AssociationRulesMiner()
+
+                if "Groceries" in ar_source:
+                    df_groc = load_groceries_dataset()
+                    ar_miner.fit_from_dataframe(df_groc, "id_compra", "item")
+                    _ar_label = "Dataset Groceries (público)"
+                else:
+                    if "wm_df" not in st.session_state:
+                        st.error("⚠️ Primero ejecuta el **Web Mining** (Tab 6).")
+                        st.stop()
+                    trans = generate_synthetic_transactions(
+                        st.session_state["wm_df"], n_transacciones=ar_n_trans)
+                    ar_miner.fit(trans)
+                    _ar_label = f"Productos Outdoor ({ar_n_trans} transacciones sintéticas)"
+
+                df_its   = ar_miner.get_frequent_itemsets(min_support=ar_min_sup)
+                df_rules = ar_miner.get_rules(
+                    min_confidence=ar_min_conf,
+                    min_lift=ar_min_lift,
+                    min_support=ar_min_sup)
+
+                st.session_state["_ar_miner"]  = ar_miner
+                st.session_state["_ar_its"]    = df_its
+                st.session_state["_ar_rules"]  = df_rules
+                st.session_state["_ar_label"]  = _ar_label
+
+                if df_rules.empty:
+                    st.warning(f"Se encontraron {len(df_its)} itemsets frecuentes, "
+                               "pero no se generaron reglas con los parámetros actuales. "
+                               "Prueba reducir la confianza o el lift mínimo.")
+                else:
+                    st.success(f"✅ {len(df_rules)} reglas generadas desde {len(df_its)} itemsets.")
+
+            except Exception as e:
+                import traceback
+                st.error(f"❌ {e}")
+                st.code(traceback.format_exc())
+
+    if "_ar_miner" not in st.session_state:
+        st.info("👆 Configura los parámetros y presiona **Ejecutar**.")
+    else:
+        ar_miner  = st.session_state["_ar_miner"]
+        df_its    = st.session_state["_ar_its"]
+        df_rules  = st.session_state["_ar_rules"]
+        _ar_label = st.session_state["_ar_label"]
+        _ar_sum   = ar_miner.summary()
+
+        st.caption(f"**Fuente:** {_ar_label}")
+
+        # KPIs
+        ks1,ks2,ks3,ks4,ks5,ks6 = st.columns(6)
+        ks1.metric("Transacciones",     f"{_ar_sum.get('total_transacciones',0):,}")
+        ks2.metric("Ítems únicos",       _ar_sum.get("total_items_unicos",0))
+        ks3.metric("Itemsets frecuentes",_ar_sum.get("itemsets_frecuentes",0))
+        ks4.metric("Reglas",             _ar_sum.get("reglas_generadas",0))
+        ks5.metric("Confianza media",    _ar_sum.get("confianza_media",0))
+        ks6.metric("Lift medio",         _ar_sum.get("lift_medio",0))
+
+        dist_ar = ar_miner.distribution_stats()
+        if dist_ar:
+            with st.expander("📉 Distribución de ítems por transacción"):
+                d1,d2,d3,d4 = st.columns(4)
+                d1.metric("Media",        dist_ar["media_items_por_transaccion"])
+                d2.metric("Máximo",       dist_ar["max_items"])
+                d3.metric("Mínimo",       dist_ar["min_items"])
+                d4.metric("≥ 5 ítems",   dist_ar["transacciones_5_mas_items"])
+
+        tab_its, tab_rules, tab_viz, tab_rec = st.tabs([
+            "🧺 Itemsets", "📋 Reglas", "📊 Visualizaciones", "💡 Recomendaciones"])
+
+        with tab_its:
+            st.subheader("Itemsets Frecuentes")
+            if df_its.empty:
+                st.warning("No se encontraron itemsets. Reduce el soporte mínimo.")
+            else:
+                top_its = ar_miner.top_itemsets(n=20, min_size=1)
+                show_df(top_its)
+                top2 = ar_miner.top_itemsets(n=15, min_size=2)
+                if not top2.empty:
+                    fig_its = px.bar(top2, x="support", y="itemsets_str",
+                                     orientation="h", color="support",
+                                     color_continuous_scale=C_MAIN,
+                                     title="Top Itemsets (≥ 2 ítems) por Soporte",
+                                     template=TMPL)
+                    fig_its.update_layout(yaxis_title="", xaxis_title="Soporte")
+                    st.plotly_chart(fig_its, width="stretch")
+
+        with tab_rules:
+            if df_rules.empty:
+                st.warning("No hay reglas. Reduce confianza o lift mínimo.")
+            else:
+                st.subheader(f"Top Reglas (ordenadas por Lift)")
+                top_r = ar_miner.top_rules(n=25, by="lift")
+                show_df(top_r)
+
+                st.subheader("Top Reglas por Confianza")
+                top_c = ar_miner.top_rules(n=25, by="confidence")
+                show_df(top_c)
+
+        with tab_viz:
+            if df_rules.empty:
+                st.warning("No hay reglas para visualizar.")
+            else:
+                # Scatter support × confidence × lift
+                st.subheader("Mapa Support × Confidence × Lift")
+                fig_sc = px.scatter(
+                    df_rules,
+                    x="support", y="confidence",
+                    size="lift", color="lift",
+                    color_continuous_scale=C_MAIN,
+                    hover_data=["antecedents_str","consequents_str","lift"],
+                    title="Reglas: Soporte vs Confianza (tamaño = Lift)",
+                    template=TMPL)
+                fig_sc.update_layout(xaxis_title="Soporte", yaxis_title="Confianza")
+                st.plotly_chart(fig_sc, width="stretch")
+
+                # Distribuciones
+                col_dist1, col_dist2, col_dist3 = st.columns(3)
+                with col_dist1:
+                    fig_sup = px.histogram(df_rules, x="support", nbins=20,
+                                            title="Distribución del Soporte",
+                                            color_discrete_sequence=[DISC[0]], template=TMPL)
+                    st.plotly_chart(fig_sup, width="stretch")
+                with col_dist2:
+                    fig_con = px.histogram(df_rules, x="confidence", nbins=20,
+                                            title="Distribución de Confianza",
+                                            color_discrete_sequence=[DISC[1]], template=TMPL)
+                    st.plotly_chart(fig_con, width="stretch")
+                with col_dist3:
+                    fig_lft = px.histogram(df_rules, x="lift", nbins=20,
+                                            title="Distribución del Lift",
+                                            color_discrete_sequence=[DISC[2]], template=TMPL)
+                    st.plotly_chart(fig_lft, width="stretch")
+
+                # Heatmap
+                if len(df_rules) <= 500:
+                    st.subheader("Heatmap de Confianza")
+                    top_ants = df_rules["antecedents_str"].value_counts().head(8).index.tolist()
+                    hm_df = df_rules[df_rules["antecedents_str"].isin(top_ants)]
+                    if not hm_df.empty:
+                        pivot = hm_df.pivot_table(
+                            index="antecedents_str",
+                            columns="consequents_str",
+                            values="confidence", aggfunc="max").fillna(0)
+                        if not pivot.empty and pivot.shape[1] <= 30:
+                            fig_hm = px.imshow(pivot,
+                                               color_continuous_scale=C_MAIN,
+                                               title="Confianza: Antecedente → Consecuente",
+                                               aspect="auto", template=TMPL,
+                                               text_auto=".2f")
+                            st.plotly_chart(fig_hm, width="stretch")
+
+        with tab_rec:
+            st.subheader("💡 Motor de Recomendaciones")
+            if df_rules.empty:
+                st.warning("Genera reglas primero.")
+            else:
+                all_items = sorted(set(
+                    item for ant in df_rules["antecedents"] for item in ant))
+
+                col_r1, col_r2 = st.columns([3,1])
+                sel_item = col_r1.selectbox("Si el cliente compra:", all_items,
+                                             key="ar_item_sel")
+                top_n_r  = col_r2.slider("Top N:", 1, 15, 5, key="ar_topn_sl")
+
+                recs = ar_miner.recommend(sel_item, top_n=top_n_r)
+                if not recs.empty:
+                    st.success(f"**Cuando el cliente compra `{sel_item}`, "
+                                f"también podría comprar:**")
+                    cc_r1, cc_r2 = st.columns([1,2])
+                    with cc_r1:
+                        show_df(recs)
+                    with cc_r2:
+                        fig_rec = px.bar(recs, x="Confianza", y="Recomendación",
+                                         orientation="h", color="Lift",
+                                         color_continuous_scale=C_MAIN,
+                                         title=f"Recomendaciones para: {sel_item}",
+                                         text="Confianza", template=TMPL)
+                        fig_rec.update_traces(texttemplate="%{text:.3f}")
+                        st.plotly_chart(fig_rec, width="stretch")
+                else:
+                    st.info(f"No hay reglas para `{sel_item}`. "
+                            "Reduce la confianza o el lift mínimo.")
+
+                # Búsqueda libre
+                st.divider()
+                st.subheader("🔎 Buscar Reglas por Ítem")
+                col_f1, col_f2 = st.columns([3,1])
+                filter_item = col_f1.text_input("Ítem a buscar:", key="ar_filter_inp")
+                filter_side = col_f2.selectbox("Posición:",
+                    ["antecedents","consequents","any"], key="ar_filter_side")
+                if filter_item.strip():
+                    filtered = ar_miner.filter_rules_by_item(filter_item.strip(), filter_side)
+                    if not filtered.empty:
+                        show_df(filtered)
+                    else:
+                        st.info(f"No se encontraron reglas con `{filter_item}`.")
