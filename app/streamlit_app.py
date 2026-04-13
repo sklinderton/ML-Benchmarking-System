@@ -354,6 +354,18 @@ with st.sidebar:
             sep_val = "\t" if sep_raw == "\\t" else sep_raw
             csv_opts = {"sep": sep_val, "decimal": decimal, "idx": use_idx}
 
+    # MEJORA: campo URL para carga directa desde internet (CSV, JSON, scraping)
+    st.subheader("🌐 O carga desde URL")
+    dataset_url = st.text_input(
+        "URL del dataset (CSV, JSON, Excel, o página web):",
+        value="",
+        placeholder="https://ejemplo.com/datos.csv",
+        key="sb_dataset_url",
+        help="Pega una URL directa a un CSV/JSON/Excel público, o una URL de página web para scraping automático.",
+    )
+    if dataset_url.strip():
+        st.caption("✅ URL detectada — se cargará automáticamente al presionar **Cargar Dataset**")
+
     st.divider()
 
     threshold = 0.5; balancing = "none"; train_ratio = 0.8; seasonal_periods = 12
@@ -420,7 +432,42 @@ with tab_explore:
         with st.spinner("Cargando..."):
             err = None
 
-            if selected_dataset == "📤 Subir archivo":
+            # MEJORA: rama URL — tiene prioridad sobre selector de dataset
+            _url = st.session_state.get("sb_dataset_url", "").strip()
+            if _url:
+                try:
+                    from mlbenchmark.web_mining import WebMiner
+                    _miner = WebMiner(delay=0.5)
+                    if problem_type == "Series de Tiempo":
+                        # MEJORA: para TS intentar cargar como CSV numérico
+                        _df_url = _miner.load_from_url(_url)
+                        if _df_url.empty:
+                            err = f"No se pudo cargar datos desde: {_url}"
+                        else:
+                            _num_cols = _df_url.select_dtypes(include="number").columns
+                            if not len(_num_cols):
+                                err = "No se encontraron columnas numéricas en la URL."
+                            else:
+                                st.session_state.series = _df_url[_num_cols[0]].dropna().values.astype(float)
+                                st.session_state.working_df = None
+                    else:
+                        # MEJORA: para clasificación/regresión: scraping o CSV
+                        _df_url, _log = _miner.scrape_with_log(url_base=_url, max_pages=2)
+                        if _df_url.empty:
+                            err = f"No se pudo cargar datos desde: {_url}"
+                        else:
+                            st.session_state.working_df = _df_url
+                            # MEJORA: usar sugerir_target para detectar target automáticamente
+                            from mlbenchmark.eda import analisisEDA
+                            _eda_tmp = analisisEDA(_df_url)
+                            _sugerencia = _eda_tmp.sugerir_target()
+                            st.session_state.target_col = _sugerencia["columna_sugerida"]
+                            st.session_state["_url_target_sugerido"] = _sugerencia
+                            st.session_state.series = None
+                except Exception as _e:
+                    err = f"Error cargando URL: {_e}"
+
+            elif selected_dataset == "📤 Subir archivo":
                 if uploaded_file is None:
                     err = "No has subido ningún archivo."
                 else:
@@ -538,6 +585,14 @@ with tab_explore:
             )
             st.session_state.target_col = new_target
             st.info(f"Target: **{new_target}** · Features: {len(wdf.columns)-1} columnas")
+            # MEJORA: mostrar sugerencia de target automática si viene de URL
+            if "_url_target_sugerido" in st.session_state:
+                _sug = st.session_state["_url_target_sugerido"]
+                st.success(
+                    f"🤖 **Target sugerido automáticamente:** `{_sug['columna_sugerida']}` "
+                    f"— {_sug['razon']} (score={_sug['score']}) "
+                    f"→ Problema: **{_sug['tipo_problema']}**"
+                )
 
     target_col = st.session_state.target_col
 
@@ -551,6 +606,21 @@ with tab_explore:
     c4.metric("❓ Valores Nulos", n_null)
 
     # ── Vista previa ──────────────────────────────────────────
+    # MEJORA: mostrar sugerencia de target automática con analisisEDA.sugerir_target()
+    with st.expander("🤖 Detección Automática de Target (EDA)", expanded=False):
+        try:
+            from mlbenchmark.eda import analisisEDA as _EDA
+            _eda_sug = _EDA(wdf)
+            _sug_res = _eda_sug.sugerir_target()
+            st.success(
+                f"**Columna target sugerida:** `{_sug_res['columna_sugerida']}` "
+                f"· Tipo de problema: **{_sug_res['tipo_problema']}** | "
+                f"*Razón:* {_sug_res['razon']}"
+            )
+            show_df(_sug_res["detalle"].head(10))
+        except Exception as _e:
+            st.info(f"Análisis de target no disponible: {_e}")
+
     with st.expander("👁️ Vista Previa del Dataset", expanded=True):
         n_rows = st.slider("Filas a mostrar:", 5, 50, 10, key="exp_preview_rows")
         show_df(wdf.head(n_rows))
