@@ -1,5 +1,10 @@
 """
 preprocessing.py - Módulo de preprocesamiento de datos
+
+MEJORA: split_data ahora detecta URLs y carga datos automáticamente.
+  - Si X es una URL string, descarga el dataset (CSV/JSON/Excel/scraping)
+  - y puede ser el nombre de la columna target (string) o None (última columna)
+  - Todo lo demás sigue igual: firma pública no cambiada
 """
 
 import numpy as np
@@ -13,9 +18,14 @@ def split_data(X, y, test_size=0.3, random_state=42, stratify=True):
     """
     Divide los datos en train y test con opción de estratificación.
 
+    MEJORA: si X es una URL (string comenzando con http/https o terminando en
+    .csv/.json/.xlsx), carga automáticamente el dataset. En ese caso:
+      - y puede ser el nombre de la columna target (string)
+      - y=None usa la última columna como target
+
     Args:
-        X: Features
-        y: Target
+        X: Features, ndarray, DataFrame, o URL string al dataset
+        y: Target, ndarray, Series, nombre de columna (str), o None si X es URL
         test_size: Proporción del set de prueba (0.1 - 0.5)
         random_state: Semilla aleatoria
         stratify: Si True, mantiene proporción de clases
@@ -23,6 +33,12 @@ def split_data(X, y, test_size=0.3, random_state=42, stratify=True):
     Returns:
         X_train, X_test, y_train, y_test
     """
+    # MEJORA: detectar si X es una URL o ruta a archivo de datos
+    if isinstance(X, str):
+        X_loaded, y_loaded = _load_from_source(X, target_col=y)
+        X = X_loaded
+        y = y_loaded
+
     strat = y if stratify else None
     try:
         return train_test_split(X, y, test_size=test_size,
@@ -31,6 +47,94 @@ def split_data(X, y, test_size=0.3, random_state=42, stratify=True):
         # Si falla estratificación (p.ej. regresión), sin estratificar
         return train_test_split(X, y, test_size=test_size,
                                 random_state=random_state)
+
+
+def _load_from_source(source: str, target_col=None):
+    """
+    MEJORA: función interna que carga X e y desde una URL o archivo local.
+    No es parte de la API pública pero complementa split_data.
+
+    Args:
+        source    : URL o ruta local al dataset
+        target_col: nombre de la columna target (str), o None → última columna
+
+    Returns:
+        X (DataFrame), y (Series)
+    """
+    df = None
+    src_lower = source.lower().split("?")[0]
+
+    # ── Intentar carga directa con pandas ─────────────────────
+    loaders = [
+        # (condición, función)
+        (lambda s: s.endswith(".csv") or s.endswith(".tsv"),
+         lambda: pd.read_csv(source)),
+        (lambda s: s.endswith(".json"),
+         lambda: pd.read_json(source)),
+        (lambda s: s.endswith(".xlsx") or s.endswith(".xls"),
+         lambda: pd.read_excel(source)),
+    ]
+
+    for condition, loader in loaders:
+        if condition(src_lower):
+            try:
+                df = loader()
+                break
+            except Exception:
+                pass
+
+    # MEJORA: intentar pandas.read_csv como catch-all (funciona con URLs raw)
+    if df is None:
+        try:
+            df = pd.read_csv(source)
+        except Exception:
+            pass
+
+    # MEJORA: fallback a tabla HTML si la URL es una página web
+    if df is None:
+        try:
+            tables = pd.read_html(source)
+            if tables:
+                df = max(tables, key=len)
+        except Exception:
+            pass
+
+    # MEJORA: fallback a WebMiner para páginas de scraping
+    if df is None:
+        try:
+            from .web_mining import WebMiner
+            miner = WebMiner(delay=0.5)
+            df, _ = miner.scrape_with_log(url_base=source, max_pages=2)
+        except Exception:
+            pass
+
+    if df is None or df.empty:
+        raise ValueError(
+            f"No se pudo cargar el dataset desde '{source}'. "
+            "Verifica la URL o el formato del archivo."
+        )
+
+    # ── Separar X e y ─────────────────────────────────────────
+    if isinstance(target_col, str) and target_col in df.columns:
+        # MEJORA: columna target especificada explícitamente
+        y_out = df[target_col]
+        X_out = df.drop(columns=[target_col])
+    elif target_col is None or (isinstance(target_col, str) and target_col not in df.columns):
+        # MEJORA: usar última columna como target por defecto
+        y_out = df.iloc[:, -1]
+        X_out = df.iloc[:, :-1]
+    else:
+        # target_col es array/Series: usar directamente
+        y_out = pd.Series(target_col)
+        X_out = df
+
+    # MEJORA: codificar categóricas del X automáticamente para compatibilidad
+    for col in X_out.select_dtypes(include=["object", "category"]).columns:
+        le = LabelEncoder()
+        X_out = X_out.copy()
+        X_out[col] = le.fit_transform(X_out[col].astype(str))
+
+    return X_out, y_out
 
 
 def scale_features(X_train, X_test, method="standard"):

@@ -3,9 +3,9 @@ eda.py - Paquete de Análisis Exploratorio de Datos (EDA)
 Arquitectura CRISP-DM + OOP + Principios SOLID
 BCD-7213 Minería de Datos Avanzada - Universidad LEAD
 
-Adaptaciones para Streamlit:
-  - Métodos gráficos retornan fig (compatible con st.pyplot)
-  - Métodos de texto retornan dict/DataFrame (compatible con st.dataframe)
+MEJORA: analisisEDA detecta automáticamente la columna target candidata
+  mediante el método sugerir_target(), que busca columnas con pocas
+  categorías únicas, desbalance detectable y alta correlación con el resto.
 """
 
 import pandas as pd
@@ -21,6 +21,7 @@ class analisisEDA:
     - Data Understanding: perfilado, estadísticas, nulos, duplicados
     - Data Preparation: limpieza, dummies, renombrado
     - Visualización: boxplots, histogramas, correlaciones, dispersión
+    MEJORA: sugerir_target() detecta automáticamente columna objetivo candidata
     """
 
     def __init__(self, df: pd.DataFrame):
@@ -75,6 +76,137 @@ class analisisEDA:
         vc = self.__df[columna].value_counts().reset_index()
         vc.columns = ["Valor", "Conteo"]
         return vc
+
+    # ── MEJORA: detección automática de target ───────────────────
+
+    def sugerir_target(self, max_categorias: int = 20) -> dict:
+        """
+        MEJORA: detecta automáticamente la columna más probable como target.
+
+        Criterios de puntuación (mayor score → mejor candidato):
+          +3 si la columna se llama 'target', 'label', 'clase', 'y', 'output'
+          +2 si es la última columna del DataFrame
+          +2 si tiene pocas categorías únicas (≤ max_categorias) → clasificación
+          +1 si hay desbalance detectable (ratio min/max < 0.4)
+          +1 si es columna numérica binaria (0/1)
+          +1 si su nombre contiene palabras clave de target
+          -1 si tiene demasiados valores únicos (probable ID)
+          -1 si contiene más del 30% de nulos
+
+        Args:
+            max_categorias: máximo de valores únicos para considerar clasificación
+
+        Returns:
+            dict con:
+              'columna_sugerida': str  — nombre de la columna recomendada
+              'tipo_problema':    str  — 'classification' o 'regression'
+              'razon':            str  — explicación legible
+              'scores':           dict — puntuación de cada columna
+              'detalle':          pd.DataFrame — tabla completa de análisis
+        """
+        df = self.__df
+        n_filas = len(df)
+        scores = {}
+        detalles = []
+
+        # MEJORA: palabras clave que sugieren columna target
+        KEYWORDS_TARGET = {
+            "target", "label", "clase", "class", "y", "output",
+            "resultado", "etiqueta", "categoria", "category",
+            "fraude", "fraud", "churn", "default", "survived",
+            "outcome", "diagnosis", "response", "precio", "price",
+            "salary", "income", "ingreso", "sales", "ventas",
+        }
+
+        for col in df.columns:
+            score = 0
+            n_unicos = df[col].nunique()
+            pct_nulos = df[col].isna().mean()
+            col_lower = col.lower().strip()
+
+            # MEJORA: criterio nombre exacto
+            if col_lower in KEYWORDS_TARGET:
+                score += 3
+
+            # MEJORA: criterio última columna (convención común)
+            if col == df.columns[-1]:
+                score += 2
+
+            # MEJORA: criterio nombre parcial
+            if any(kw in col_lower for kw in KEYWORDS_TARGET):
+                score += 1
+
+            # MEJORA: pocas categorías → candidato a clasificación
+            if 2 <= n_unicos <= max_categorias:
+                score += 2
+
+            # MEJORA: columna numérica binaria (0/1 o True/False)
+            if df[col].dropna().isin([0, 1, True, False]).all() and n_unicos == 2:
+                score += 1
+
+            # MEJORA: desbalance detectable → clasificación real
+            if 2 <= n_unicos <= max_categorias:
+                vc = df[col].value_counts()
+                if len(vc) >= 2:
+                    ratio = vc.iloc[-1] / vc.iloc[0]
+                    if ratio < 0.4:
+                        score += 1
+
+            # MEJORA: penalizar columnas con muchos valores únicos (probable ID)
+            if n_unicos > n_filas * 0.9:
+                score -= 1
+
+            # MEJORA: penalizar columnas con muchos nulos
+            if pct_nulos > 0.3:
+                score -= 1
+
+            scores[col] = score
+            detalles.append({
+                "Columna":    col,
+                "Score":      score,
+                "N_Únicos":   n_unicos,
+                "Tipo_dato":  str(df[col].dtype),
+                "% Nulos":    round(pct_nulos * 100, 1),
+                "Última_col": col == df.columns[-1],
+            })
+
+        # MEJORA: elegir columna con mayor score
+        mejor_col = max(scores, key=scores.get)
+        mejor_score = scores[mejor_col]
+        n_unicos_mejor = df[mejor_col].nunique()
+
+        # MEJORA: determinar tipo de problema
+        if n_unicos_mejor <= max_categorias:
+            tipo = "classification"
+        else:
+            tipo = "regression"
+
+        # MEJORA: construir razón legible
+        razon_parts = []
+        col_lower = mejor_col.lower()
+        if any(kw in col_lower for kw in KEYWORDS_TARGET):
+            razon_parts.append("nombre sugiere variable objetivo")
+        if mejor_col == df.columns[-1]:
+            razon_parts.append("es la última columna")
+        if 2 <= n_unicos_mejor <= max_categorias:
+            razon_parts.append(
+                f"{n_unicos_mejor} valores únicos → apta para clasificación")
+        else:
+            razon_parts.append(
+                f"{n_unicos_mejor} valores únicos → apta para regresión")
+        razon = "; ".join(razon_parts) if razon_parts else "mayor score compuesto"
+
+        detalle_df = pd.DataFrame(detalles).sort_values("Score", ascending=False)\
+                       .reset_index(drop=True)
+
+        return {
+            "columna_sugerida": mejor_col,
+            "tipo_problema":    tipo,
+            "razon":            razon,
+            "score":            mejor_score,
+            "scores":           scores,
+            "detalle":          detalle_df,
+        }
 
     # ── Data Preparation ─────────────────────────────────────────
 
