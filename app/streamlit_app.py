@@ -1645,21 +1645,44 @@ with tab_nn:
     st.subheader("⚙️ Configuración")
     col_n1, col_n2, col_n3, col_n4 = st.columns(4)
 
-    # Usamos prefijo "_nn_" para evitar conflicto con session_state
-    nn_task_sel  = col_n1.selectbox("Tarea:",
-        ["Clasificación — TieneDescuento", "Regresión — PrecioFinal"],
-        key="nn_task_sel")
-    nn_epochs    = col_n2.slider("Épocas (Keras):", 10, 150, 40, 5, key="nn_epochs_sl")
-    nn_testsize  = col_n3.slider("Test size (%):", 10, 40, 20, 5, key="nn_test_sl") / 100
-    nn_dataset   = col_n4.selectbox("Dataset:",
-        ["Productos Web Mining", "Breast Cancer (clasificación)", "California Housing (regresión)"],
-        key="nn_dataset_sel")
+    _nn_dataset_opts = ["Productos Web Mining", "Breast Cancer (clasificación)", "California Housing (regresión)"]
+    _user_df_loaded = st.session_state.get("data_loaded") and st.session_state.get("working_df") is not None
+    if _user_df_loaded:
+        _nn_dataset_opts.insert(0, "📂 Dataset cargado (Tab 1)")
+    nn_dataset = col_n4.selectbox("Dataset:", _nn_dataset_opts, key="nn_dataset_sel")
+
+    # Opciones de tarea: dependen del dataset seleccionado
+    if "Dataset cargado" in nn_dataset and _user_df_loaded:
+        _tgt_name = st.session_state.target_col or ""
+        _nn_task_opts = [
+            f"Clasificación — {_tgt_name}",
+            f"Regresión — {_tgt_name}",
+        ]
+        _nn_task_help = (
+            f"Target detectado: **{_tgt_name}**. "
+            "Elige Clasificación si es una categoría/etiqueta discreta, "
+            "o Regresión si es un valor numérico continuo."
+        )
+    elif "Breast Cancer" in nn_dataset:
+        _nn_task_opts = ["Clasificación — target (maligno/benigno)"]
+        _nn_task_help = "Breast Cancer es siempre clasificación binaria."
+    elif "California" in nn_dataset:
+        _nn_task_opts = ["Regresión — price (precio de vivienda)"]
+        _nn_task_help = "California Housing es siempre regresión."
+    else:
+        _nn_task_opts = ["Clasificación — TieneDescuento", "Regresión — PrecioFinal"]
+        _nn_task_help = "Columnas del dataset Web Mining."
+
+    nn_task_sel = col_n1.selectbox("Tarea:", _nn_task_opts, key="nn_task_sel",
+                                    help=_nn_task_help)
+    nn_epochs   = col_n2.slider("Épocas (Keras):", 10, 150, 40, 5, key="nn_epochs_sl")
+    nn_testsize = col_n3.slider("Test size (%):", 10, 40, 20, 5, key="nn_test_sl") / 100
 
     run_nn = st.button("🚀 Entrenar las 5 Redes Neuronales", type="primary",
                         use_container_width=True, key="btn_nn_run")
 
     if run_nn:
-        # Determinar task
+        # Determinar task a partir del texto de la opción seleccionada
         _task = "classification" if "Clasificación" in nn_task_sel else "regression"
 
         with st.spinner("⏳ Entrenando... (1-5 min según hardware y épocas)"):
@@ -1668,7 +1691,26 @@ with tab_nn:
                 from sklearn.preprocessing import StandardScaler, LabelEncoder
 
                 # ── Fuente de datos ───────────────────────────
-                if "Breast Cancer" in nn_dataset:
+                if "Dataset cargado" in nn_dataset:
+                    df_loaded = st.session_state.working_df.copy()
+                    _tgt = st.session_state.target_col
+                    if _tgt not in df_loaded.columns:
+                        st.error(f"Columna target '{_tgt}' no encontrada. Ve a Tab 1 y configura el target.")
+                        st.stop()
+                    from sklearn.preprocessing import LabelEncoder as _LE
+                    for _c in df_loaded.select_dtypes(include="object").columns:
+                        df_loaded[_c] = _LE().fit_transform(df_loaded[_c].astype(str))
+                    _feat_cols = [c for c in df_loaded.columns if c != _tgt]
+                    X_raw = df_loaded[_feat_cols].fillna(0).values
+                    y_raw = df_loaded[_tgt].values
+                    # Auto-detect task if not overridden by user
+                    _n_unique = len(set(y_raw))
+                    if _n_unique <= 20:
+                        _task = "classification"
+                    else:
+                        _task = "regression"
+
+                elif "Breast Cancer" in nn_dataset:
                     from sklearn.datasets import load_breast_cancer
                     X_raw, y_raw = load_breast_cancer(return_X_y=True)
                     _task = "classification"
@@ -1856,9 +1898,13 @@ with tab_ar:
         """)
 
     # ── Fuente y parámetros ───────────────────────────────────
+    _ar_sources = ["Productos outdoor (Web Mining)", "Dataset Groceries (público)"]
+    if st.session_state.get("data_loaded") and st.session_state.get("working_df") is not None:
+        _ar_sources.insert(0, "📂 Dataset cargado (Tab 1)")
+
     col_s1, col_s2 = st.columns([2,1])
     ar_source = col_s1.radio("Fuente de transacciones:",
-        ["Productos outdoor (Web Mining)", "Dataset Groceries (público)"],
+        _ar_sources,
         key="ar_source_radio", label_visibility="collapsed", horizontal=True)
     ar_n_trans = col_s2.slider("Transacciones sintéticas:", 500, 5000, 2000, 100,
                                 key="ar_n_trans_sl",
@@ -1878,7 +1924,113 @@ with tab_ar:
             try:
                 ar_miner = AssociationRulesMiner()
 
-                if "Groceries" in ar_source:
+                if "Dataset cargado" in ar_source:
+                    df_ar_loaded = st.session_state.working_df.copy()
+                    _tgt_ar = st.session_state.target_col
+                    _n_rows = len(df_ar_loaded)
+
+                    # ── Seleccionar columnas útiles para asociación ──────
+                    # Solo columnas con cardinalidad baja (≤ 20 valores únicos
+                    # O ≤ 10% de las filas) para garantizar soporte suficiente.
+                    _MAX_CARD = min(20, max(5, int(_n_rows * 0.10)))
+                    _cat_cols = [
+                        c for c in df_ar_loaded.select_dtypes(include="object").columns
+                        if c != _tgt_ar and df_ar_loaded[c].nunique() <= _MAX_CARD
+                    ]
+
+                    # Para columnas numéricas: discretizar en 4 bins (Bajo/Medio/Alto/Muy Alto)
+                    _num_cols_to_bin = [
+                        c for c in df_ar_loaded.select_dtypes(include=[np.number]).columns
+                        if c != _tgt_ar and df_ar_loaded[c].nunique() > 2
+                    ]
+                    _bin_labels = ["Bajo", "Medio", "Alto", "Muy Alto"]
+                    for _bc in _num_cols_to_bin:
+                        try:
+                            df_ar_loaded[f"{_bc}_bin"] = pd.qcut(
+                                df_ar_loaded[_bc], q=4,
+                                labels=[f"{_bc}:{l}" for l in _bin_labels],
+                                duplicates="drop"
+                            ).astype(str)
+                            _cat_cols.append(f"{_bc}_bin")
+                        except Exception:
+                            pass
+
+                    # Columnas booleanas / binarias directas
+                    _bool_cols = [
+                        c for c in df_ar_loaded.select_dtypes(include=[np.number]).columns
+                        if c != _tgt_ar and df_ar_loaded[c].nunique() == 2
+                    ]
+                    for _bc in _bool_cols:
+                        df_ar_loaded[f"{_bc}_flag"] = df_ar_loaded[_bc].map(
+                            lambda v: f"{_bc}:Sí" if v else f"{_bc}:No"
+                        )
+                        _cat_cols.append(f"{_bc}_flag")
+
+                    _item_cols = list(dict.fromkeys(_cat_cols))  # deduplicar preservando orden
+
+                    if not _item_cols:
+                        st.error(
+                            "No se encontraron columnas adecuadas para reglas de asociación. "
+                            "El dataset necesita al menos una columna categórica o numérica discreta."
+                        )
+                        st.stop()
+
+                    # ── Límite de ítems únicos para evitar OOM con Apriori ──
+                    # Apriori es exponencial en nº de ítems únicos.
+                    # Con >50 columnas la matriz binaria crece a cientos de miles
+                    # de combinaciones y provoca MemoryError.
+                    _MAX_ITEM_COLS = 20
+                    if len(_item_cols) > _MAX_ITEM_COLS:
+                        # Priorizar columnas con menor cardinalidad (más frecuentes → más soporte)
+                        _item_cols = sorted(
+                            _item_cols,
+                            key=lambda c: df_ar_loaded[c].nunique() if c in df_ar_loaded.columns else 999
+                        )[:_MAX_ITEM_COLS]
+                        st.warning(
+                            f"⚠️ El dataset tiene muchas columnas. "
+                            f"Se usan las **{_MAX_ITEM_COLS} columnas con menor cardinalidad** "
+                            f"para evitar errores de memoria. "
+                            f"Apriori funciona mejor con ≤ 50 ítems únicos."
+                        )
+
+                    # ── Construir transacciones ──────────────────────────
+                    # Cada fila = una transacción; cada celda no-nula = un ítem
+                    def _row_to_items(row, cols):
+                        items = []
+                        for c in cols:
+                            v = row[c]
+                            if pd.notna(v) and str(v) not in ("nan", "None", ""):
+                                items.append(str(v) if ":" in str(v) else f"{c}:{str(v)}")
+                        return items
+
+                    _trans_loaded = [
+                        _row_to_items(row, _item_cols)
+                        for _, row in df_ar_loaded[_item_cols].iterrows()
+                    ]
+                    _trans_loaded = [t for t in _trans_loaded if len(t) >= 2]
+
+                    if not _trans_loaded:
+                        st.error("No se pudieron extraer transacciones con al menos 2 ítems.")
+                        st.stop()
+
+                    # Verificar ítems únicos totales antes de llamar a Apriori
+                    _unique_items = len({item for t in _trans_loaded for item in t})
+                    if _unique_items > 100:
+                        st.error(
+                            f"❌ Demasiados ítems únicos ({_unique_items}). "
+                            "Apriori requiere ≤ 100 ítems únicos para no agotar la memoria. "
+                            "Sube el **Soporte mínimo** o usa un dataset con menos columnas."
+                        )
+                        st.stop()
+
+                    ar_miner.fit(_trans_loaded)
+                    _ar_label = (
+                        f"Dataset cargado — {len(_trans_loaded)} transacciones · "
+                        f"{_unique_items} ítems únicos · "
+                        f"{len(_item_cols)} columnas"
+                    )
+
+                elif "Groceries" in ar_source:
                     df_groc = load_groceries_dataset()
                     ar_miner.fit_from_dataframe(df_groc, "id_compra", "item")
                     _ar_label = "Dataset Groceries (público)"
