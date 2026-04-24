@@ -185,6 +185,58 @@ def encode_categorical(df, columns=None):
     return df_enc, encoders
 
 
+def impute_missing(df, strategy="median", fill_value=None):
+    """
+    Imputa valores faltantes en un DataFrame.
+
+    Args:
+        df:         DataFrame a imputar (se devuelve copia).
+        strategy:   'median' | 'mean' | 'mode' | 'constant'
+        fill_value: Valor a usar cuando strategy='constant'.
+
+    Returns:
+        df_imputed (DataFrame)
+    """
+    df_out = df.copy()
+    num_cols = df_out.select_dtypes(include=[np.number]).columns
+    cat_cols = df_out.select_dtypes(include=["object", "category"]).columns
+
+    if strategy == "median":
+        df_out[num_cols] = df_out[num_cols].fillna(df_out[num_cols].median())
+        for c in cat_cols:
+            mode = df_out[c].mode()
+            df_out[c] = df_out[c].fillna(mode[0] if len(mode) else "Unknown")
+    elif strategy == "mean":
+        df_out[num_cols] = df_out[num_cols].fillna(df_out[num_cols].mean())
+        for c in cat_cols:
+            mode = df_out[c].mode()
+            df_out[c] = df_out[c].fillna(mode[0] if len(mode) else "Unknown")
+    elif strategy == "mode":
+        for c in df_out.columns:
+            mode = df_out[c].mode()
+            df_out[c] = df_out[c].fillna(mode[0] if len(mode) else (0 if c in num_cols else "Unknown"))
+    elif strategy == "constant":
+        df_out = df_out.fillna(fill_value if fill_value is not None else 0)
+    return df_out
+
+
+def encode_categorical_ohe(df, columns=None, drop_first=True):
+    """
+    Codifica variables categóricas con One-Hot Encoding (pd.get_dummies).
+
+    Args:
+        df:         DataFrame.
+        columns:    Columnas a codificar (None = automático).
+        drop_first: Si True, elimina la primera categoría para evitar multicolinealidad.
+
+    Returns:
+        df_encoded (DataFrame con dummies)
+    """
+    if columns is None:
+        columns = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    return pd.get_dummies(df, columns=columns, drop_first=drop_first)
+
+
 def split_timeseries(series, train_ratio=0.8):
     """
     Divide una serie temporal manteniendo el orden temporal.

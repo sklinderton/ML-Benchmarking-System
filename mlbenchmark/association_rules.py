@@ -508,6 +508,125 @@ class AssociationRulesMiner:
             "Soporte":       subset["support"].values,
         })
 
+    def fit_from_churn_dataframe(
+        self,
+        df: pd.DataFrame,
+        churn_col: str = "Churn",
+        numeric_bins: int = 4,
+        max_item_cols: int = 20,
+    ) -> "AssociationRulesMiner":
+        """
+        Construye transacciones orientadas a churn desde el dataset Telco (o similar).
+
+        Cada fila del DataFrame se convierte en una transacción con ítems del tipo
+        "columna=valor", lo que permite descubrir patrones como:
+            {Contract=Month-to-month, TechSupport=No} → {Churn=Yes}
+
+        Args:
+            df:           DataFrame preprocesado (con columna churn_col como "Yes"/"No" o 0/1).
+            churn_col:    Nombre de la columna de churn (se incluye como ítem "Churn=Yes"/"Churn=No").
+            numeric_bins: Número de cuantiles para discretizar columnas numéricas continuas.
+            max_item_cols: Máximo de columnas a incluir (las de menor cardinalidad tienen prioridad).
+
+        Returns:
+            self
+        """
+        df_work = df.copy()
+
+        # Normalizar churn a string legible
+        if churn_col in df_work.columns:
+            df_work[churn_col] = df_work[churn_col].map(
+                lambda v: "Yes" if str(v).strip().lower() in ("yes", "1", "true") else "No"
+            )
+
+        bin_labels_map = {
+            4: ["Bajo", "Medio", "Alto", "Muy Alto"],
+            3: ["Bajo", "Medio", "Alto"],
+            2: ["Bajo", "Alto"],
+        }
+        labels = bin_labels_map.get(numeric_bins, [str(i) for i in range(numeric_bins)])
+
+        # Discretizar columnas numéricas continuas
+        num_cols = [
+            c for c in df_work.select_dtypes(include=[np.number]).columns
+            if df_work[c].nunique() > numeric_bins
+        ]
+        for c in num_cols:
+            try:
+                df_work[c] = pd.qcut(
+                    df_work[c], q=numeric_bins,
+                    labels=[f"{c}={l}" for l in labels],
+                    duplicates="drop",
+                ).astype(str)
+            except Exception:
+                df_work.drop(columns=[c], inplace=True)
+
+        # Columnas binarias 0/1 → "col=Sí" / "col=No"
+        bin_cols = [
+            c for c in df_work.select_dtypes(include=[np.number]).columns
+            if df_work[c].nunique() == 2
+        ]
+        for c in bin_cols:
+            df_work[c] = df_work[c].map(lambda v: f"{c}=Sí" if v else f"{c}=No")
+
+        # Columnas categóricas → "col=valor"
+        cat_cols = df_work.select_dtypes(include=["object", "category"]).columns.tolist()
+        for c in cat_cols:
+            df_work[c] = df_work[c].apply(
+                lambda v: f"{c}={v}" if not str(v).startswith(f"{c}=") else str(v)
+            )
+
+        # Seleccionar columnas con menor cardinalidad (Apriori es exponencial)
+        all_cols = df_work.columns.tolist()
+        if len(all_cols) > max_item_cols:
+            # Priorizar: churn_col siempre incluida, luego las de menor cardinalidad
+            non_churn = [c for c in all_cols if c != churn_col]
+            non_churn_sorted = sorted(non_churn, key=lambda c: df_work[c].nunique())
+            all_cols = non_churn_sorted[: max_item_cols - 1] + [churn_col]
+
+        # Construir transacciones
+        transacciones = []
+        for _, row in df_work[all_cols].iterrows():
+            items = [
+                str(v) for v in row.values
+                if pd.notna(v) and str(v) not in ("nan", "None", "")
+            ]
+            if len(items) >= 2:
+                transacciones.append(items)
+
+        return self.fit(transacciones)
+
+    def get_churn_rules(
+        self,
+        min_confidence: float = 0.3,
+        min_lift: float = 1.0,
+        min_support: float = 0.01,
+        churn_col: str = "Churn",
+    ) -> pd.DataFrame:
+        """
+        Filtra reglas cuyo consecuente contiene el ítem de churn positivo.
+
+        Args:
+            min_confidence: Confianza mínima.
+            min_lift:       Lift mínimo.
+            min_support:    Soporte mínimo.
+            churn_col:      Prefijo del ítem de churn (e.g. "Churn" → busca "Churn=Yes").
+
+        Returns:
+            DataFrame de reglas filtradas, ordenadas por lift descendente.
+        """
+        all_rules = self.get_rules(
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+            min_support=min_support,
+        )
+        if all_rules.empty:
+            return all_rules
+
+        churn_item = f"{churn_col}=Yes"
+        mask = all_rules["consequents"].apply(lambda cs: churn_item in cs)
+        return all_rules[mask].reset_index(drop=True)
+
     # ── Estadísticas y resumen ────────────────────────────────
 
     def summary(self) -> dict:

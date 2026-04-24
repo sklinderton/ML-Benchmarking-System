@@ -228,6 +228,31 @@ def load_predefined_dataset(name, problem_type):
             df["fraud"] = y[idx]
             return df, "fraud"
 
+        if name == "IBM Telco Customer Churn":
+            # Buscar CSV local en el mismo directorio del repo
+            import os
+            _csv_candidates = [
+                os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             "WA_Fn-UseC_-Telco-Customer-Churn.csv"),
+                os.path.join(os.path.dirname(__file__),
+                             "WA_Fn-UseC_-Telco-Customer-Churn.csv"),
+            ]
+            for _p in _csv_candidates:
+                if os.path.exists(_p):
+                    df = pd.read_csv(_p)
+                    return df, "Churn"
+            # Fallback: descargar desde URL pública
+            _url = (
+                "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/"
+                "master/data/Telco-Customer-Churn.csv"
+            )
+            try:
+                df = pd.read_csv(_url)
+                return df, "Churn"
+            except Exception:
+                pass
+            return None, None
+
     elif problem_type == "Regresión":
         if name == "California Housing":
             d = fetch_california_housing()
@@ -334,7 +359,8 @@ with st.sidebar:
 
     st.subheader("📂 Fuente de Datos")
     dataset_options = {
-        "Clasificación":    ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)", "📤 Subir archivo"],
+        "Clasificación":    ["Breast Cancer Wisconsin", "Credit Card Fraud (Simulado)",
+                             "IBM Telco Customer Churn", "📤 Subir archivo"],
         "Regresión":        ["California Housing", "📤 Subir archivo"],
         "Series de Tiempo": ["Airline Passengers", "📤 Subir archivo"],
     }
@@ -409,7 +435,7 @@ for k, v in _defaults.items():
 # ══════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════
-tab_explore, tab_config, tab_bench, tab_detail, tab_best, tab_wm, tab_nn, tab_ar = st.tabs([
+tab_explore, tab_config, tab_bench, tab_detail, tab_best, tab_wm, tab_nn, tab_ar, tab_churn = st.tabs([
     "🔍 Exploración & EDA",
     "⚙️ Configuración de Modelos",
     "🏆 Benchmarking",
@@ -418,6 +444,7 @@ tab_explore, tab_config, tab_bench, tab_detail, tab_best, tab_wm, tab_nn, tab_ar
     "🌐 Web Mining",
     "🧠 Redes Neuronales",
     "🔗 Reglas de Asociación",
+    "📡 Análisis Churn (CRISP-DM)",
 ])
 
 
@@ -2225,3 +2252,595 @@ with tab_ar:
                         show_df(filtered)
                     else:
                         st.info(f"No se encontraron reglas con `{filter_item}`.")
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  TAB 9 · ANÁLISIS CHURN — CRISP-DM COMPLETO            ║
+# ╚══════════════════════════════════════════════════════════╝
+with tab_churn:
+    st.header("📡 Análisis de Churn — Pipeline CRISP-DM Completo")
+    st.markdown("""
+    Pipeline integrado para el artículo científico **BCD-6210**.
+    Cubre las 6 fases CRISP-DM aplicadas al dataset IBM Telco Customer Churn:
+    Clasificación · K-Means Clustering · Reglas de Asociación · Redes Neuronales · Prueba Wilcoxon.
+    """)
+
+    # ── Tracker de fases CRISP-DM ─────────────────────────────
+    st.markdown("""
+    <style>
+    .phase-badge{display:inline-block;padding:3px 10px;border-radius:12px;
+      font-size:.75rem;font-weight:700;margin-right:6px;margin-bottom:4px}
+    .ph1{background:#1a3a4a;color:#7ecfea}.ph2{background:#1a3a2a;color:#7eea9b}
+    .ph3{background:#3a2a1a;color:#eab97e}.ph4{background:#2a1a3a;color:#bf9eea}
+    .ph5{background:#3a1a1a;color:#ea7e7e}.ph6{background:#1a1a3a;color:#7e9eea}
+    </style>
+    <div>
+      <span class="phase-badge ph1">Fase 1 · Business Understanding</span>
+      <span class="phase-badge ph2">Fase 2 · Data Understanding</span>
+      <span class="phase-badge ph3">Fase 3 · Data Preparation</span>
+      <span class="phase-badge ph4">Fase 4 · Modeling</span>
+      <span class="phase-badge ph5">Fase 5 · Evaluation</span>
+      <span class="phase-badge ph6">Fase 6 · Deployment</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Pipeline state ────────────────────────────────────────
+    _churn_state_keys = [
+        "churn_loaded", "churn_clf_run", "churn_km_run",
+        "churn_ar_run", "churn_nn_run", "churn_stat_run",
+    ]
+    for _k in _churn_state_keys:
+        if _k not in st.session_state:
+            st.session_state[_k] = False
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("📡 Pipeline Churn")
+        st.checkbox("✅ Datos cargados",     value=st.session_state.churn_loaded,     disabled=True, key="_ch_s1")
+        st.checkbox("✅ Clasificación",      value=st.session_state.churn_clf_run,    disabled=True, key="_ch_s2")
+        st.checkbox("✅ K-Means",            value=st.session_state.churn_km_run,     disabled=True, key="_ch_s3")
+        st.checkbox("✅ Reglas Asociación",  value=st.session_state.churn_ar_run,     disabled=True, key="_ch_s4")
+        st.checkbox("✅ Redes Neuronales",   value=st.session_state.churn_nn_run,     disabled=True, key="_ch_s5")
+        st.checkbox("✅ Prueba Estadística", value=st.session_state.churn_stat_run,   disabled=True, key="_ch_s6")
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 1-2: CARGA Y COMPRENSIÓN DEL DATASET
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph2">Fase 2 · Data Understanding</span>', unsafe_allow_html=True)
+    st.subheader("📂 Carga del Dataset Telco")
+
+    _churn_src = st.radio(
+        "Fuente:",
+        ["📂 Dataset cargado (Tab 1)", "📤 Subir CSV Telco", "⬇️ Usar IBM Telco predefinido"],
+        horizontal=True, key="churn_src_radio",
+    )
+
+    _churn_upfile = None
+    if _churn_src == "📤 Subir CSV Telco":
+        _churn_upfile = st.file_uploader(
+            "WA_Fn-UseC_-Telco-Customer-Churn.csv",
+            type=["csv"], key="churn_up_file",
+        )
+
+    if st.button("📥 Cargar Dataset Telco", type="primary", use_container_width=True, key="btn_churn_load"):
+        with st.spinner("Cargando..."):
+            try:
+                if _churn_src == "📂 Dataset cargado (Tab 1)":
+                    if not st.session_state.get("data_loaded") or st.session_state.working_df is None:
+                        st.error("Primero carga un dataset en Tab 1.")
+                        st.stop()
+                    _df_raw = st.session_state.working_df.copy()
+                elif _churn_src == "📤 Subir CSV Telco":
+                    if _churn_upfile is None:
+                        st.error("Sube el archivo CSV primero.")
+                        st.stop()
+                    _df_raw = pd.read_csv(_churn_upfile)
+                else:
+                    _df_raw, _ = load_predefined_dataset("IBM Telco Customer Churn", "Clasificación")
+                    if _df_raw is None:
+                        st.error("No se pudo cargar el dataset predefinido. Sube el CSV manualmente.")
+                        st.stop()
+
+                st.session_state["churn_df_raw"] = _df_raw
+                st.session_state.churn_loaded = True
+                st.success(f"✅ Cargado: {_df_raw.shape[0]:,} filas × {_df_raw.shape[1]} columnas")
+            except Exception as _e:
+                st.error(f"❌ {_e}")
+
+    if not st.session_state.churn_loaded or "churn_df_raw" not in st.session_state:
+        st.info("👆 Carga el dataset para continuar.")
+        st.stop()
+
+    _df_raw = st.session_state["churn_df_raw"]
+
+    with st.expander("🔍 Vista previa del dataset crudo"):
+        show_df(_df_raw.head(10))
+        c_r1, c_r2, c_r3 = st.columns(3)
+        c_r1.metric("Filas", f"{_df_raw.shape[0]:,}")
+        c_r2.metric("Columnas", _df_raw.shape[1])
+        _churn_col_raw = next((c for c in _df_raw.columns if c.lower() == "churn"), None)
+        if _churn_col_raw:
+            _churn_pct = (_df_raw[_churn_col_raw].map(
+                lambda v: 1 if str(v).strip().lower() in ("yes","1","true") else 0
+            ).mean() * 100)
+            c_r3.metric("Tasa de Churn", f"{_churn_pct:.1f}%")
+        _null_sum = _df_raw.isnull().sum().sum() + (_df_raw == " ").sum().sum()
+        st.caption(f"Valores faltantes / blancos detectados: **{_null_sum}**")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 3: PREPROCESAMIENTO
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph3">Fase 3 · Data Preparation</span>', unsafe_allow_html=True)
+    st.subheader("⚙️ Preprocesamiento")
+
+    _churn_col_name = st.text_input("Nombre de la columna target (Churn):",
+                                     value="Churn", key="churn_col_name_inp")
+    _encode_method = st.radio("Codificación categórica:",
+                               ["One-Hot Encoding (OHE)", "Label Encoding"],
+                               horizontal=True, key="churn_encode_radio")
+    _impute_method = st.selectbox("Estrategia de imputación:",
+                                   ["median", "mean", "mode", "constant"],
+                                   key="churn_impute_sel")
+    _scale_method  = st.selectbox("Escalado:",
+                                   ["standard (Z-score)", "minmax (0-1)", "none"],
+                                   key="churn_scale_sel")
+
+    if st.button("🔧 Aplicar Preprocesamiento", use_container_width=True, key="btn_churn_prep"):
+        with st.spinner("Preprocesando..."):
+            try:
+                from mlbenchmark.preprocessing import (
+                    impute_missing, encode_categorical, encode_categorical_ohe, scale_features)
+                from mlbenchmark.clustering import preprocess_telco
+
+                _df_proc = preprocess_telco(_df_raw) if _churn_col_name == "Churn" else _df_raw.copy()
+
+                if _encode_method == "Label Encoding":
+                    _df_proc, _ = encode_categorical(_df_proc)
+
+                st.session_state["churn_df_proc"] = _df_proc
+                st.success(f"✅ Preprocesado: {_df_proc.shape[0]:,} × {_df_proc.shape[1]} columnas")
+                show_df(_df_proc.head(5))
+            except Exception as _e:
+                import traceback
+                st.error(f"❌ {_e}")
+                st.code(traceback.format_exc())
+
+    if "churn_df_proc" not in st.session_state:
+        st.info("👆 Aplica el preprocesamiento para continuar.")
+        st.stop()
+
+    _df_proc = st.session_state["churn_df_proc"]
+    _target_churn = _churn_col_name if _churn_col_name in _df_proc.columns else _df_proc.columns[-1]
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 4a: CLASIFICACIÓN — Benchmarking con hiperparámetros
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph4">Fase 4 · Modeling — Clasificación</span>', unsafe_allow_html=True)
+    st.subheader("🤖 Benchmarking de Clasificadores")
+
+    _clf_models_all = ["Logistic Regression", "Random Forest", "Decision Tree",
+                       "SVM", "K-Nearest Neighbors", "Naive Bayes", "Gradient Boosting", "XGBoost"]
+    try:
+        import xgboost  # noqa
+    except ImportError:
+        _clf_models_all = [m for m in _clf_models_all if m != "XGBoost"]
+
+    _sel_clf = st.multiselect("Modelos:", _clf_models_all, default=_clf_models_all, key="churn_clf_sel")
+
+    _churn_hp = st.session_state.get("churn_hp", {})
+    for _mn in _sel_clf:
+        with st.expander(f"⚙️ {_mn}", expanded=False):
+            _use_def = st.checkbox("Usar predeterminados", value=_churn_hp.get(_mn, {}).get("_defaults", True),
+                                    key=f"churn_def_{_mn}")
+            if _use_def:
+                _churn_hp[_mn] = {"_defaults": True}
+            else:
+                _mhp = {"_defaults": False}
+                if _mn == "Logistic Regression":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["C"]        = _c1.number_input("C", 0.001, 1000.0, 1.0, key=f"ch_lr_C_{_mn}")
+                    _mhp["max_iter"] = int(_c2.number_input("max_iter", 100, 10000, 1000, key=f"ch_lr_mi_{_mn}"))
+                    _mhp["solver"]   = st.selectbox("Solver", ["lbfgs","liblinear","sag","saga"],
+                                                     key=f"ch_lr_s_{_mn}")
+                elif _mn == "Random Forest":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["n_estimators"]    = _c1.slider("n_estimators", 10, 500, 100, key=f"ch_rf_ne_{_mn}")
+                    _mhp["max_depth"]       = _c2.slider("max_depth (0=None)", 0, 50, 0, key=f"ch_rf_md_{_mn}")
+                    _c3, _c4 = st.columns(2)
+                    _mhp["min_samples_split"] = _c3.slider("min_samples_split", 2, 20, 2, key=f"ch_rf_mss_{_mn}")
+                    _mhp["max_features"]    = _c4.selectbox("max_features", ["sqrt","log2","None"],
+                                                              key=f"ch_rf_mf_{_mn}")
+                    if _mhp["max_features"] == "None": _mhp["max_features"] = None
+                elif _mn == "Decision Tree":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["max_depth"]         = _c1.slider("max_depth (0=None)", 0, 50, 0, key=f"ch_dt_md_{_mn}")
+                    _mhp["min_samples_split"] = _c2.slider("min_samples_split", 2, 20, 2, key=f"ch_dt_mss_{_mn}")
+                    _mhp["criterion"]         = st.selectbox("criterion", ["gini","entropy"], key=f"ch_dt_cr_{_mn}")
+                elif _mn == "SVM":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["C"]      = _c1.number_input("C", 0.001, 1000.0, 1.0, key=f"ch_svm_C_{_mn}")
+                    _mhp["kernel"] = _c2.selectbox("Kernel", ["rbf","linear","poly"], key=f"ch_svm_k_{_mn}")
+                    _mhp["gamma"]  = st.selectbox("Gamma", ["scale","auto"], key=f"ch_svm_g_{_mn}")
+                elif _mn == "K-Nearest Neighbors":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["n_neighbors"] = _c1.slider("n_neighbors", 1, 50, 5, key=f"ch_knn_n_{_mn}")
+                    _mhp["weights"]     = _c2.selectbox("Weights", ["uniform","distance"], key=f"ch_knn_w_{_mn}")
+                    _mhp["metric"]      = st.selectbox("Metric",
+                        ["minkowski","euclidean","manhattan"], key=f"ch_knn_m_{_mn}")
+                elif _mn == "Naive Bayes":
+                    _mhp["var_smoothing"] = st.number_input("var_smoothing", 1e-12, 1e-3, 1e-9,
+                                                             format="%.2e", key=f"ch_nb_vs_{_mn}")
+                elif _mn == "Gradient Boosting":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["n_estimators"]  = _c1.slider("n_estimators", 50, 500, 100, key=f"ch_gb_ne_{_mn}")
+                    _mhp["learning_rate"] = _c2.slider("learning_rate", 0.01, 1.0, 0.1, key=f"ch_gb_lr_{_mn}")
+                    _mhp["max_depth"]     = st.slider("max_depth", 1, 15, 3, key=f"ch_gb_md_{_mn}")
+                elif _mn == "XGBoost":
+                    _c1, _c2 = st.columns(2)
+                    _mhp["n_estimators"]  = _c1.slider("n_estimators", 50, 500, 100, key=f"ch_xgb_ne_{_mn}")
+                    _mhp["learning_rate"] = _c2.slider("learning_rate", 0.01, 1.0, 0.1, key=f"ch_xgb_lr_{_mn}")
+                    _c3, _c4 = st.columns(2)
+                    _mhp["max_depth"]  = _c3.slider("max_depth", 1, 15, 6, key=f"ch_xgb_md_{_mn}")
+                    _mhp["subsample"]  = _c4.slider("subsample", 0.4, 1.0, 1.0, step=0.05, key=f"ch_xgb_ss_{_mn}")
+                _churn_hp[_mn] = _mhp
+    st.session_state["churn_hp"] = _churn_hp
+
+    _ch_cv   = st.slider("K-Folds (CV):", 3, 10, 5, key="churn_cv_sl")
+    _ch_bal  = st.selectbox("Balanceo de clases:",
+                             ["none","smote","undersample","combined"],
+                             format_func=lambda x: {"none":"Sin balanceo","smote":"SMOTE",
+                                 "undersample":"Under-sampling","combined":"Híbrido"}[x],
+                             key="churn_bal_sel")
+    _ch_thr  = st.slider("Umbral de decisión:", 0.1, 0.9, 0.5, 0.05, key="churn_thr_sl")
+
+    if st.button("🚀 Ejecutar Benchmarking de Clasificación", type="primary",
+                  use_container_width=True, key="btn_churn_clf"):
+        with st.spinner("⏳ Entrenando clasificadores..."):
+            try:
+                from mlbenchmark.benchmarking import run_benchmark
+                from mlbenchmark.balancing import apply_balancing
+                from mlbenchmark.validation import stratified_kfold
+                from sklearn.model_selection import train_test_split
+                from sklearn.preprocessing import StandardScaler
+
+                _feat_cols = [c for c in _df_proc.columns if c != _target_churn]
+                _X = _df_proc[_feat_cols].fillna(0).values.astype(float)
+                _y = _df_proc[_target_churn].values.astype(int)
+
+                # Escalar
+                _scaler = StandardScaler()
+                _X = _scaler.fit_transform(_X)
+
+                # Balanceo
+                if _ch_bal != "none":
+                    _X, _y = apply_balancing(_X, _y, method=_ch_bal)
+
+                _X_tr, _X_te, _y_tr, _y_te = train_test_split(
+                    _X, _y, test_size=0.3, random_state=42, stratify=_y)
+
+                _models = build_models_with_hyperparams("classification", _sel_clf, _churn_hp)
+
+                _clf_results = run_benchmark(
+                    _models, _X_tr, _X_te, _y_tr, _y_te,
+                    cv=_ch_cv, threshold=_ch_thr)
+
+                st.session_state["churn_clf_results"] = _clf_results
+                st.session_state["churn_X_tr"] = _X_tr
+                st.session_state["churn_X_te"] = _X_te
+                st.session_state["churn_y_tr"] = _y_tr
+                st.session_state["churn_y_te"] = _y_te
+                st.session_state["churn_models"] = _models
+                st.session_state.churn_clf_run = True
+                st.success("✅ Benchmarking completado.")
+            except Exception as _e:
+                import traceback
+                st.error(f"❌ {_e}")
+                st.code(traceback.format_exc())
+
+    if st.session_state.churn_clf_run and "churn_clf_results" in st.session_state:
+        _res = st.session_state["churn_clf_results"]
+        if isinstance(_res, pd.DataFrame) and not _res.empty:
+            st.markdown('<span class="phase-badge ph5">Fase 5 · Evaluation</span>', unsafe_allow_html=True)
+            st.subheader("📊 Resultados de Clasificación")
+            show_df(style_table(_res))
+            _best_row = _res.loc[_res["F1"].idxmax()] if "F1" in _res.columns else _res.iloc[0]
+            st.success(f"🥇 Mejor modelo: **{_best_row.name if hasattr(_best_row, 'name') else '—'}** "
+                        f"· F1={fmt(_best_row.get('F1', None))} "
+                        f"· AUC-ROC={fmt(_best_row.get('AUC-ROC', None))}")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 4b: K-MEANS CLUSTERING
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph4">Fase 4 · Modeling — K-Means Clustering</span>', unsafe_allow_html=True)
+    st.subheader("🔵 Segmentación K-Means")
+
+    _km_k_min  = st.slider("k mínimo:", 2, 5,  2, key="km_k_min_sl")
+    _km_k_max  = st.slider("k máximo:", 3, 15, 8, key="km_k_max_sl")
+    _km_k_opt  = st.slider("k a usar (tras analizar codo/silhouette):", 2, 15, 3, key="km_k_opt_sl")
+
+    if st.button("🔵 Ejecutar K-Means + Análisis Elbow & Silhouette",
+                  use_container_width=True, key="btn_churn_km"):
+        with st.spinner("⏳ Calculando clusters..."):
+            try:
+                from mlbenchmark.clustering import KMeansClusterer, cluster_churn_profile
+                from sklearn.preprocessing import StandardScaler
+
+                _feat_cols_km = [c for c in _df_proc.columns if c != _target_churn]
+                _X_km = _df_proc[_feat_cols_km].fillna(0).values.astype(float)
+                _X_km = StandardScaler().fit_transform(_X_km)
+
+                _clusterer = KMeansClusterer(random_state=42)
+                _k_range = range(_km_k_min, _km_k_max + 1)
+                _df_elbow, _df_sil = _clusterer.run_analysis(_X_km, _k_range)
+                _clusterer.fit(_X_km, k=_km_k_opt)
+
+                _df_pca = _clusterer.pca_2d(_X_km)
+                _df_profile = _clusterer.get_cluster_profile(_df_proc[_feat_cols_km + [_target_churn]])
+
+                # Churn rate por cluster
+                _df_with_cluster = _df_proc.copy()
+                _df_with_cluster["Cluster"] = _clusterer.labels_
+                _df_churn_rate = cluster_churn_profile(_df_with_cluster, "Cluster", _target_churn)
+
+                st.session_state["churn_km_elbow"]    = _df_elbow
+                st.session_state["churn_km_sil"]      = _df_sil
+                st.session_state["churn_km_pca"]      = _df_pca
+                st.session_state["churn_km_profile"]  = _df_profile
+                st.session_state["churn_km_churnrate"]= _df_churn_rate
+                st.session_state.churn_km_run = True
+                st.success(f"✅ {_km_k_opt} clusters generados · "
+                            f"Inercia: {_clusterer.inertia_:,.1f}")
+            except Exception as _e:
+                import traceback
+                st.error(f"❌ {_e}")
+                st.code(traceback.format_exc())
+
+    if st.session_state.churn_km_run:
+        _c_el, _c_si = st.columns(2)
+        with _c_el:
+            _df_elbow = st.session_state["churn_km_elbow"]
+            fig_elbow = px.line(_df_elbow, x="k", y="wcss", markers=True,
+                                 title="Método del Codo (WCSS)", template=TMPL)
+            fig_elbow.update_traces(line_color=DISC[0])
+            st.plotly_chart(fig_elbow, width="stretch")
+        with _c_si:
+            _df_sil = st.session_state["churn_km_sil"]
+            fig_sil = px.line(_df_sil, x="k", y="silhouette", markers=True,
+                               title="Silhouette Score por k", template=TMPL)
+            fig_sil.update_traces(line_color=DISC[1])
+            st.plotly_chart(fig_sil, width="stretch")
+
+        _df_pca = st.session_state["churn_km_pca"]
+        fig_pca = px.scatter(_df_pca, x="PC1", y="PC2", color="Cluster",
+                              title=f"Visualización PCA 2D — k={_km_k_opt} clusters",
+                              template=TMPL, color_discrete_sequence=DISC)
+        st.plotly_chart(fig_pca, width="stretch")
+
+        st.subheader("📋 Perfil de Clusters")
+        show_df(style_table(st.session_state["churn_km_profile"].reset_index()))
+
+        st.subheader("📉 Tasa de Churn por Cluster")
+        show_df(st.session_state["churn_km_churnrate"])
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 4c: REGLAS DE ASOCIACIÓN — CHURN-SPECIFIC
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph4">Fase 4 · Modeling — Reglas de Asociación</span>', unsafe_allow_html=True)
+    st.subheader("🔗 Reglas de Asociación orientadas a Churn")
+
+    _ar_sup_ch  = st.slider("Soporte mínimo:", 0.005, 0.20, 0.02, 0.005, format="%.3f", key="ch_ar_sup")
+    _ar_conf_ch = st.slider("Confianza mínima:", 0.05, 0.90, 0.30, 0.05, key="ch_ar_conf")
+    _ar_lift_ch = st.slider("Lift mínimo:", 1.0, 5.0, 1.2, 0.1, key="ch_ar_lift")
+    _ar_bins_ch = st.slider("Bins para discretización numérica:", 2, 6, 4, key="ch_ar_bins")
+
+    if st.button("🚀 Ejecutar Reglas de Asociación (Churn)", use_container_width=True,
+                  type="primary", key="btn_churn_ar"):
+        with st.spinner("⏳ Minando reglas..."):
+            try:
+                from mlbenchmark.association_rules import AssociationRulesMiner
+
+                _ar_miner_ch = AssociationRulesMiner()
+                _ar_miner_ch.fit_from_churn_dataframe(
+                    _df_raw,
+                    churn_col=_target_churn if _target_churn in _df_raw.columns else "Churn",
+                    numeric_bins=_ar_bins_ch,
+                )
+                _df_ch_rules = _ar_miner_ch.get_churn_rules(
+                    min_confidence=_ar_conf_ch,
+                    min_lift=_ar_lift_ch,
+                    min_support=_ar_sup_ch,
+                )
+                _df_all_rules_ch = _ar_miner_ch.get_rules(
+                    min_confidence=_ar_conf_ch,
+                    min_lift=_ar_lift_ch,
+                    min_support=_ar_sup_ch,
+                )
+
+                st.session_state["churn_ar_miner"]      = _ar_miner_ch
+                st.session_state["churn_ar_rules"]      = _df_ch_rules
+                st.session_state["churn_ar_all_rules"]  = _df_all_rules_ch
+                st.session_state.churn_ar_run = True
+
+                _n_all = len(_df_all_rules_ch)
+                _n_ch  = len(_df_ch_rules)
+                st.success(f"✅ {_n_all} reglas totales · **{_n_ch} reglas con consecuente Churn=Yes**")
+            except Exception as _e:
+                import traceback
+                st.error(f"❌ {_e}")
+                st.code(traceback.format_exc())
+
+    if st.session_state.churn_ar_run and "churn_ar_rules" in st.session_state:
+        _df_ch_r = st.session_state["churn_ar_rules"]
+        if not _df_ch_r.empty:
+            st.subheader("📋 Top Reglas → Churn=Yes")
+            _top_ch = _df_ch_r[["antecedents_str","consequents_str","support","confidence","lift"]].head(20)
+            show_df(_top_ch)
+
+            fig_ch_ar = px.bar(
+                _df_ch_r.head(15), x="lift", y="antecedents_str",
+                orientation="h", color="confidence",
+                color_continuous_scale=C_REV,
+                title="Top 15 Reglas de Churn por Lift",
+                template=TMPL, labels={"antecedents_str": "Antecedente", "lift": "Lift"},
+            )
+            st.plotly_chart(fig_ch_ar, width="stretch")
+        else:
+            st.warning("No se generaron reglas con consecuente Churn=Yes. "
+                       "Reduce el soporte, confianza o lift mínimo.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 4d: REDES NEURONALES
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph4">Fase 4 · Modeling — Redes Neuronales</span>', unsafe_allow_html=True)
+    st.subheader("🧠 Benchmarking de Redes Neuronales")
+
+    _nn_epochs_ch = st.slider("Épocas (Keras):", 10, 100, 30, 5, key="ch_nn_epochs")
+    _nn_test_ch   = st.slider("Test size (%):", 10, 40, 20, 5, key="ch_nn_test") / 100
+
+    if st.button("🚀 Entrenar Redes Neuronales sobre Churn", use_container_width=True,
+                  type="primary", key="btn_churn_nn"):
+        with st.spinner("⏳ Entrenando redes... (puede tomar 1-5 min)"):
+            try:
+                from mlbenchmark.neural_networks import benchmark_neural_networks
+                from sklearn.model_selection import train_test_split
+                from sklearn.preprocessing import StandardScaler
+
+                _feat_cols_nn = [c for c in _df_proc.columns if c != _target_churn]
+                _X_nn = _df_proc[_feat_cols_nn].fillna(0).values.astype(float)
+                _y_nn = _df_proc[_target_churn].values.astype(int)
+                _X_nn = StandardScaler().fit_transform(_X_nn)
+
+                _X_tr_nn, _X_te_nn, _y_tr_nn, _y_te_nn = train_test_split(
+                    _X_nn, _y_nn, test_size=_nn_test_ch, random_state=42, stratify=_y_nn)
+
+                _df_nn_res = benchmark_neural_networks(
+                    _X_tr_nn, _X_te_nn, _y_tr_nn, _y_te_nn,
+                    task="classification", epochs=_nn_epochs_ch)
+
+                st.session_state["churn_nn_results"] = _df_nn_res
+                st.session_state.churn_nn_run = True
+                st.success("✅ Redes neuronales entrenadas.")
+            except Exception as _e:
+                import traceback
+                st.error(f"❌ {_e}")
+                st.code(traceback.format_exc())
+
+    if st.session_state.churn_nn_run and "churn_nn_results" in st.session_state:
+        _df_nn_r = st.session_state["churn_nn_results"]
+        if isinstance(_df_nn_r, pd.DataFrame) and not _df_nn_r.empty:
+            st.subheader("📊 Resultados de Redes Neuronales")
+            show_df(style_table(_df_nn_r))
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════
+    # FASE 5: EVALUACIÓN ESTADÍSTICA — Prueba de Wilcoxon
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<span class="phase-badge ph5">Fase 5 · Evaluation — Prueba Estadística</span>', unsafe_allow_html=True)
+    st.subheader("📐 Prueba de Wilcoxon (Signed-Rank Test)")
+    st.markdown("""
+    Compara las distribuciones de F1-Score de **dos modelos** usando validación cruzada
+    repetida (RepeatedStratifiedKFold). Si p < 0.05, la diferencia es estadísticamente significativa.
+    """)
+
+    _wil_cv_n   = st.slider("Repeticiones CV:", 2, 10, 5, key="wil_cv_n_sl")
+    _wil_cv_k   = st.slider("K folds:", 3, 10, 5,  key="wil_cv_k_sl")
+
+    if st.button("📐 Ejecutar Prueba de Wilcoxon (top 2 modelos)", use_container_width=True,
+                  key="btn_churn_wilcoxon"):
+        if not st.session_state.churn_clf_run or "churn_models" not in st.session_state:
+            st.error("Primero ejecuta el benchmarking de clasificación.")
+        else:
+            with st.spinner("⏳ Ejecutando CV repetida..."):
+                try:
+                    from scipy.stats import wilcoxon
+                    from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
+                    from sklearn.preprocessing import StandardScaler
+
+                    _feat_cols_wil = [c for c in _df_proc.columns if c != _target_churn]
+                    _X_wil = _df_proc[_feat_cols_wil].fillna(0).values.astype(float)
+                    _y_wil = _df_proc[_target_churn].values.astype(int)
+                    _X_wil = StandardScaler().fit_transform(_X_wil)
+
+                    _models_wil = st.session_state["churn_models"]
+                    _rskf = RepeatedStratifiedKFold(n_splits=_wil_cv_k,
+                                                    n_repeats=_wil_cv_n, random_state=42)
+
+                    _cv_scores = {}
+                    for _mn, _m in _models_wil.items():
+                        _scores = cross_val_score(_m, _X_wil, _y_wil, cv=_rskf,
+                                                   scoring="f1", n_jobs=-1)
+                        _cv_scores[_mn] = _scores
+
+                    # Prueba Wilcoxon entre el par con mayor diferencia de F1 media
+                    _means = {k: v.mean() for k, v in _cv_scores.items()}
+                    _sorted_models = sorted(_means, key=_means.get, reverse=True)
+                    if len(_sorted_models) >= 2:
+                        _m1, _m2 = _sorted_models[0], _sorted_models[1]
+                        _s1, _s2 = _cv_scores[_m1], _cv_scores[_m2]
+                        _stat, _pval = wilcoxon(_s1, _s2)
+                    else:
+                        _m1 = _sorted_models[0]; _m2 = "—"
+                        _stat, _pval = None, None
+
+                    st.session_state["churn_wil_scores"] = _cv_scores
+                    st.session_state["churn_wil_pair"]   = (_m1, _m2)
+                    st.session_state["churn_wil_stat"]   = (_stat, _pval)
+                    st.session_state.churn_stat_run = True
+                    st.success("✅ Prueba de Wilcoxon completada.")
+                except Exception as _e:
+                    import traceback
+                    st.error(f"❌ {_e}")
+                    st.code(traceback.format_exc())
+
+    if st.session_state.churn_stat_run and "churn_wil_scores" in st.session_state:
+        _cv_sc  = st.session_state["churn_wil_scores"]
+        _pair   = st.session_state["churn_wil_pair"]
+        _wstat  = st.session_state["churn_wil_stat"]
+
+        st.subheader("📊 Distribución de F1-Score por CV Repetida")
+        _df_box = pd.DataFrame({k: v for k, v in _cv_sc.items()})
+        fig_box = px.box(_df_box, template=TMPL, color_discrete_sequence=DISC,
+                          title=f"F1-Score — {_wil_cv_n}×{_wil_cv_k}-Fold CV")
+        st.plotly_chart(fig_box, width="stretch")
+
+        if _wstat[0] is not None:
+            st.markdown(f"""
+            **Prueba Wilcoxon Signed-Rank:**
+            - Modelos comparados: **{_pair[0]}** vs **{_pair[1]}**
+            - Estadístico W: `{_wstat[0]:.4f}`
+            - p-valor: `{_wstat[1]:.4f}`
+            - Interpretación: {"✅ **Diferencia estadísticamente significativa** (p < 0.05)"
+                if _wstat[1] < 0.05
+                else "⚠️ No hay diferencia significativa (p ≥ 0.05)"}
+            """)
+
+        # Tabla resumen CV
+        _df_cv_sum = pd.DataFrame({
+            "Modelo": list(_cv_sc.keys()),
+            "F1 media": [v.mean().round(4) for v in _cv_sc.values()],
+            "F1 std":   [v.std().round(4)  for v in _cv_sc.values()],
+            "F1 min":   [v.min().round(4)  for v in _cv_sc.values()],
+            "F1 max":   [v.max().round(4)  for v in _cv_sc.values()],
+        }).sort_values("F1 media", ascending=False)
+        show_df(style_table(_df_cv_sum))
+
+    st.divider()
+    st.markdown('<span class="phase-badge ph6">Fase 6 · Deployment</span>', unsafe_allow_html=True)
+    st.info("""
+    **Para el artículo científico:** exporta los resultados de cada fase como tablas LaTeX
+    (usa `df.to_latex()` en Python) e insértalas en la sección *Resultados y Discusión*.
+    Las visualizaciones pueden descargarse como PNG desde los menús de Plotly.
+    """)
