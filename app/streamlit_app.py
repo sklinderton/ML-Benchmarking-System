@@ -2844,3 +2844,138 @@ with tab_churn:
     (usa `df.to_latex()` en Python) e insértalas en la sección *Resultados y Discusión*.
     Las visualizaciones pueden descargarse como PNG desde los menús de Plotly.
     """)
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║  DESCARGA GLOBAL DE RESULTADOS — CSV                    ║
+# ╚══════════════════════════════════════════════════════════╝
+st.divider()
+st.subheader("⬇️ Descargar Resultados")
+st.caption("Consolida todos los resultados generados en la sesión y descárgalos como CSV.")
+
+
+def _build_download_csv() -> tuple[str, str]:
+    """
+    Recolecta todos los DataFrames de resultados del session_state,
+    agrega una columna 'Sección' y los concatena verticalmente.
+
+    Returns:
+        (csv_string, filename)
+    """
+    import io
+    sections = []
+
+    # ── Benchmarking clásico (Tab 3) ─────────────────────────
+    _res_main = st.session_state.get("results")
+    if _res_main and isinstance(_res_main, dict):
+        _df_main = _res_main.get("results")
+        if isinstance(_df_main, pd.DataFrame) and not _df_main.empty:
+            _tmp = _df_main[[c for c in _df_main.columns if not c.startswith("_")]].copy()
+            _tmp.insert(0, "Sección", "Benchmarking General")
+            _tmp.insert(1, "Tipo", _res_main.get("problem_type", "—"))
+            sections.append(_tmp)
+
+    # ── Redes Neuronales (Tab 7) ──────────────────────────────
+    _df_nn = st.session_state.get("_nn_results")
+    if isinstance(_df_nn, pd.DataFrame) and not _df_nn.empty:
+        _tmp = _df_nn.copy()
+        _tmp.insert(0, "Sección", "Redes Neuronales")
+        _tmp.insert(1, "Tipo", "Neural Networks")
+        sections.append(_tmp)
+
+    # ── Reglas de Asociación — General (Tab 8) ───────────────
+    _df_ar = st.session_state.get("_ar_rules")
+    if isinstance(_df_ar, pd.DataFrame) and not _df_ar.empty:
+        _keep = ["antecedents_str", "consequents_str", "support", "confidence", "lift", "conviction"]
+        _tmp = _df_ar[[c for c in _keep if c in _df_ar.columns]].copy()
+        _tmp.insert(0, "Sección", "Reglas de Asociación")
+        _tmp.insert(1, "Tipo", "Association Rules")
+        sections.append(_tmp)
+
+    # ── Churn: Clasificación (Tab 9) ─────────────────────────
+    _res_clf = st.session_state.get("churn_clf_results")
+    if isinstance(_res_clf, pd.DataFrame) and not _res_clf.empty:
+        _tmp = _res_clf.copy()
+        _tmp.insert(0, "Sección", "Churn – Clasificación")
+        _tmp.insert(1, "Tipo", "Classification")
+        sections.append(_tmp)
+
+    # ── Churn: K-Means perfil (Tab 9) ────────────────────────
+    _df_km = st.session_state.get("churn_km_churnrate")
+    if isinstance(_df_km, pd.DataFrame) and not _df_km.empty:
+        _tmp = _df_km.copy()
+        _tmp.insert(0, "Sección", "Churn – K-Means (tasa churn)")
+        _tmp.insert(1, "Tipo", "Clustering")
+        sections.append(_tmp)
+
+    _df_km_prof = st.session_state.get("churn_km_profile")
+    if isinstance(_df_km_prof, pd.DataFrame) and not _df_km_prof.empty:
+        _tmp = _df_km_prof.reset_index().copy()
+        _tmp.insert(0, "Sección", "Churn – K-Means (perfil)")
+        _tmp.insert(1, "Tipo", "Clustering")
+        sections.append(_tmp)
+
+    # ── Churn: Reglas de Asociación → Churn=Yes (Tab 9) ──────
+    _df_ch_ar = st.session_state.get("churn_ar_rules")
+    if isinstance(_df_ch_ar, pd.DataFrame) and not _df_ch_ar.empty:
+        _keep = ["antecedents_str", "consequents_str", "support", "confidence", "lift"]
+        _tmp = _df_ch_ar[[c for c in _keep if c in _df_ch_ar.columns]].copy()
+        _tmp.insert(0, "Sección", "Churn – Reglas Asociación (Churn=Yes)")
+        _tmp.insert(1, "Tipo", "Association Rules")
+        sections.append(_tmp)
+
+    # ── Churn: Redes Neuronales (Tab 9) ──────────────────────
+    _df_ch_nn = st.session_state.get("churn_nn_results")
+    if isinstance(_df_ch_nn, pd.DataFrame) and not _df_ch_nn.empty:
+        _tmp = _df_ch_nn.copy()
+        _tmp.insert(0, "Sección", "Churn – Redes Neuronales")
+        _tmp.insert(1, "Tipo", "Neural Networks")
+        sections.append(_tmp)
+
+    # ── Churn: CV Wilcoxon (Tab 9) ───────────────────────────
+    _cv_wil = st.session_state.get("churn_wil_scores")
+    if _cv_wil:
+        _tmp = pd.DataFrame({
+            "Modelo":    list(_cv_wil.keys()),
+            "F1_media":  [v.mean().round(4) for v in _cv_wil.values()],
+            "F1_std":    [v.std().round(4)  for v in _cv_wil.values()],
+            "F1_min":    [v.min().round(4)  for v in _cv_wil.values()],
+            "F1_max":    [v.max().round(4)  for v in _cv_wil.values()],
+        }).sort_values("F1_media", ascending=False)
+        _wstat = st.session_state.get("churn_wil_stat", (None, None))
+        _pair  = st.session_state.get("churn_wil_pair",  ("—", "—"))
+        _tmp.insert(0, "Sección", "Churn – Wilcoxon CV")
+        _tmp.insert(1, "Tipo", "Statistical Test")
+        _tmp["Wilcoxon_W"]   = _wstat[0]
+        _tmp["Wilcoxon_p"]   = _wstat[1]
+        _tmp["Par_modelo_1"] = _pair[0]
+        _tmp["Par_modelo_2"] = _pair[1]
+        sections.append(_tmp)
+
+    if not sections:
+        return None, None
+
+    _df_all = pd.concat(sections, ignore_index=True, sort=False)
+
+    buf = io.StringIO()
+    _df_all.to_csv(buf, index=False, encoding="utf-8-sig")
+    return buf.getvalue(), "ml_benchmarking_resultados.csv"
+
+
+_csv_data, _csv_name = _build_download_csv()
+
+if _csv_data:
+    st.download_button(
+        label="📥 Descargar todos los resultados como CSV",
+        data=_csv_data,
+        file_name=_csv_name,
+        mime="text/csv",
+        use_container_width=True,
+        type="primary",
+    )
+    st.caption(
+        "El archivo incluye resultados de: Benchmarking General · Redes Neuronales · "
+        "Reglas de Asociación · Churn (Clasificación, K-Means, Reglas, Redes Neuronales, Wilcoxon)."
+    )
+else:
+    st.info("Ejecuta al menos un análisis para habilitar la descarga.")
