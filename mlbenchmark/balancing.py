@@ -124,7 +124,7 @@ def apply_combined(X, y, smote_ratio=0.5, under_ratio=1.0, random_state=42):
                        random_state=random_state)
 
 
-def apply_balancing(X, y, technique="none", random_state=42):
+def apply_balancing(X, y, technique="none", random_state=42, method=None):
     """
     Función unificada para aplicar cualquier técnica de balanceo.
 
@@ -136,6 +136,8 @@ def apply_balancing(X, y, technique="none", random_state=42):
     Returns:
         X_bal, y_bal
     """
+    if method is not None:
+        technique = method
     technique = str(technique).lower()
 
     if technique == "smote":

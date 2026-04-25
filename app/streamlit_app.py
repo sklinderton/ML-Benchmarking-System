@@ -2504,37 +2504,31 @@ with tab_churn:
         with st.spinner("⏳ Entrenando clasificadores..."):
             try:
                 from mlbenchmark.benchmarking import run_benchmark
-                from mlbenchmark.balancing import apply_balancing
-                from mlbenchmark.validation import stratified_kfold
-                from sklearn.model_selection import train_test_split
-                from sklearn.preprocessing import StandardScaler
 
                 _feat_cols = [c for c in _df_proc.columns if c != _target_churn]
                 _X = _df_proc[_feat_cols].fillna(0).values.astype(float)
                 _y = _df_proc[_target_churn].values.astype(int)
 
-                # Escalar
-                _scaler = StandardScaler()
-                _X = _scaler.fit_transform(_X)
-
-                # Balanceo
-                if _ch_bal != "none":
-                    _X, _y = apply_balancing(_X, _y, technique=_ch_bal)
-
-                _X_tr, _X_te, _y_tr, _y_te = train_test_split(
-                    _X, _y, test_size=0.3, random_state=42, stratify=_y)
-
                 _models = build_models_with_hyperparams("classification", _sel_clf, _churn_hp)
 
-                _clf_results = run_benchmark(
-                    _models, _X_tr, _X_te, _y_tr, _y_te,
-                    cv=_ch_cv, threshold=_ch_thr)
+                _res = run_benchmark(
+                    problem_type="classification",
+                    X=_X, y=_y,
+                    models=_models,
+                    test_size=0.3,
+                    cv_folds=_ch_cv,
+                    threshold=_ch_thr,
+                    balancing_technique=_ch_bal,
+                    scale=True,
+                    random_state=42,
+                )
 
+                _clf_results = _res["results"]
                 st.session_state["churn_clf_results"] = _clf_results
-                st.session_state["churn_X_tr"] = _X_tr
-                st.session_state["churn_X_te"] = _X_te
-                st.session_state["churn_y_tr"] = _y_tr
-                st.session_state["churn_y_te"] = _y_te
+                st.session_state["churn_X_tr"] = _res["X_train"]
+                st.session_state["churn_X_te"] = _res["X_test"]
+                st.session_state["churn_y_tr"] = _res["y_train"]
+                st.session_state["churn_y_te"] = _res["y_test"]
                 st.session_state["churn_models"] = _models
                 st.session_state.churn_clf_run = True
                 st.success("✅ Benchmarking completado.")
