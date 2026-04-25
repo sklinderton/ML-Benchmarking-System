@@ -2519,7 +2519,7 @@ with tab_churn:
 
                 # Balanceo
                 if _ch_bal != "none":
-                    _X, _y = apply_balancing(_X, _y, method=_ch_bal)
+                    _X, _y = apply_balancing(_X, _y, technique=_ch_bal)
 
                 _X_tr, _X_te, _y_tr, _y_te = train_test_split(
                     _X, _y, test_size=0.3, random_state=42, stratify=_y)
