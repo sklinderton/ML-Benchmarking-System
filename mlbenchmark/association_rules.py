@@ -215,6 +215,8 @@ class AssociationRulesMiner:
         self._rules: Optional[pd.DataFrame] = None
         self._fitted: bool = False
         self._last_min_support: float = 0.0
+        self._last_max_len: int = 2
+        self._last_algo: str = "fpgrowth"
 
     def __repr__(self) -> str:
         state = "fitted" if self._fitted else "not fitted"
@@ -317,24 +319,28 @@ class AssociationRulesMiner:
     def get_frequent_itemsets(
         self,
         min_support: float = 0.02,
-        max_len: Optional[int] = None,
+        max_len: int = 2,
     ) -> pd.DataFrame:
         """
-        Identifica itemsets frecuentes con soporte ≥ min_support (Apriori).
+        Identifica itemsets frecuentes con soporte ≥ min_support.
 
-        Si se llama con un min_support distinto al último usado, recalcula
-        automáticamente. También invalida las reglas en caché.
+        Usa fpgrowth (más eficiente en memoria que apriori) cuando está
+        disponible; cae a apriori como fallback.
+
+        La longitud máxima de itemset (max_len) está limitada a 2 por defecto:
+        con N ítems únicos y max_len=None, apriori genera O(2^N) combinaciones
+        — con 60 ítems eso es ~10^18 filas. Con max_len=2 el espacio se reduce
+        a O(N²), que es manejable incluso con datasets medianos.
+
+        El caché se invalida solo cuando min_support baja O max_len cambia.
 
         Args:
             min_support: Fracción mínima de transacciones (0.0–1.0).
-            max_len:     Longitud máxima del itemset. None = sin límite.
+            max_len:     Longitud máxima del itemset (default 2 = pares).
+                         Usa 3 si quieres tripletas pero aumenta el tiempo/RAM.
 
         Returns:
             DataFrame con columnas: support, itemsets, itemsets_str, n_items.
-
-        Raises:
-            NotFittedError: Si fit() no ha sido llamado.
-            ValueError: Si min_support está fuera del rango (0, 1].
         """
         self._check_fitted()
 
@@ -343,21 +349,44 @@ class AssociationRulesMiner:
                 f"min_support debe estar en (0, 1]. Recibido: {min_support}"
             )
 
-        from mlxtend.frequent_patterns import apriori
+        # Invalidar caché si cambian los parámetros de búsqueda
+        _params_changed = (
+            self._itemsets is None
+            or min_support < self._last_min_support
+            or max_len != self._last_max_len
+        )
+        if not _params_changed:
+            return self._itemsets
 
-        kwargs: dict = {"min_support": min_support, "use_colnames": True}
-        if max_len is not None:
-            kwargs["max_len"] = max_len
+        # Intentar fpgrowth primero (O(N) en memoria vs O(2^N) de apriori)
+        _algo_used = "apriori"
+        try:
+            from mlxtend.frequent_patterns import fpgrowth
+            itemsets = fpgrowth(
+                self._encoded_df,
+                min_support=min_support,
+                use_colnames=True,
+                max_len=max_len,
+            )
+            _algo_used = "fpgrowth"
+        except Exception:
+            from mlxtend.frequent_patterns import apriori
+            itemsets = apriori(
+                self._encoded_df,
+                min_support=min_support,
+                use_colnames=True,
+                max_len=max_len,
+            )
 
-        itemsets = apriori(self._encoded_df, **kwargs)
+        self._last_algo = _algo_used
 
         if itemsets.empty:
             self._itemsets = itemsets
-            self._rules = None  # invalidar reglas en caché
+            self._rules = None
             self._last_min_support = min_support
+            self._last_max_len = max_len
             return itemsets
 
-        # Normalizar frozensets (bug mlxtend 0.24)
         itemsets["itemsets"] = _normalize_frozensets(itemsets["itemsets"])
         itemsets["n_items"] = itemsets["itemsets"].apply(len)
         itemsets["itemsets_str"] = itemsets["itemsets"].apply(_frozenset_to_str)
@@ -367,8 +396,9 @@ class AssociationRulesMiner:
             .sort_values("support", ascending=False)
             .reset_index(drop=True)
         )
-        self._rules = None  # invalidar reglas en caché cuando cambian los itemsets
+        self._rules = None
         self._last_min_support = min_support
+        self._last_max_len = max_len
         return self._itemsets
 
     # ── Reglas de asociación ──────────────────────────────────
@@ -379,30 +409,24 @@ class AssociationRulesMiner:
         min_lift: float = 1.0,
         min_support: float = 0.01,
         metric: _METRIC_LITERAL = "confidence",
+        max_len: int = 2,
     ) -> pd.DataFrame:
         """
         Genera reglas de asociación a partir de los itemsets frecuentes.
 
-        Si los itemsets no han sido calculados, o si min_support es menor
-        al soporte mínimo usado anteriormente, los recalcula primero.
-
         Args:
             min_confidence: Confianza mínima para las reglas (0–1).
             min_lift:       Lift mínimo; > 1 indica asociación positiva.
-            min_support:    Soporte mínimo para itemsets. Recalcula si es
-                            menor al soporte previamente usado.
-            metric:         Métrica base para mlxtend ('confidence' | 'lift' |
-                            'support' | 'leverage' | 'conviction').
+            min_support:    Soporte mínimo para itemsets.
+            metric:         Métrica base ('confidence'|'lift'|'support'|
+                            'leverage'|'conviction').
+            max_len:        Longitud máxima de itemsets a calcular (se pasa
+                            a get_frequent_itemsets). Default 2.
 
         Returns:
             DataFrame con columnas:
                 antecedents, consequents, support, confidence, lift,
                 leverage, conviction, antecedents_str, consequents_str.
-            DataFrame vacío si no se generan reglas con los parámetros dados.
-
-        Raises:
-            NotFittedError: Si fit() no ha sido llamado.
-            ValueError: Si metric no es válido.
         """
         self._check_fitted()
 
@@ -414,15 +438,19 @@ class AssociationRulesMiner:
 
         from mlxtend.frequent_patterns import association_rules
 
-        # Recalcular itemsets si no existen o si se pide un soporte más bajo
-        if self._itemsets is None or min_support < self._last_min_support:
-            self.get_frequent_itemsets(min_support=min_support)
+        # Recalcular itemsets solo si es necesario
+        _needs_recalc = (
+            self._itemsets is None
+            or min_support < self._last_min_support
+            or max_len != self._last_max_len
+        )
+        if _needs_recalc:
+            self.get_frequent_itemsets(min_support=min_support, max_len=max_len)
 
         if self._itemsets is None or self._itemsets.empty:
             self._rules = pd.DataFrame()
             return self._rules
 
-        # El threshold de mlxtend debe corresponder a la métrica elegida
         metric_threshold_map: dict[str, float] = {
             "confidence": min_confidence,
             "lift":       min_lift,
@@ -430,29 +458,25 @@ class AssociationRulesMiner:
             "leverage":   0.0,
             "conviction": 1.0,
         }
-        threshold = metric_threshold_map[metric]
 
         rules = association_rules(
             self._itemsets,
             metric=metric,
-            min_threshold=threshold,
+            min_threshold=metric_threshold_map[metric],
         )
 
         if rules.empty:
             self._rules = pd.DataFrame()
             return self._rules
 
-        # Filtros post-generación (independientes de la métrica principal)
         rules = rules[
             (rules["confidence"] >= min_confidence) &
             (rules["lift"]       >= min_lift)
         ].copy()
 
-        # Columnas legibles para UI
         rules["antecedents_str"] = rules["antecedents"].apply(_frozenset_to_str)
         rules["consequents_str"] = rules["consequents"].apply(_frozenset_to_str)
 
-        # Redondear numéricas; conviction puede ser inf cuando confidence=1.0
         numeric_cols = ["support", "confidence", "lift", "leverage", "conviction"]
         for col in (c for c in numeric_cols if c in rules.columns):
             rules[col] = (
@@ -513,43 +537,67 @@ class AssociationRulesMiner:
         df: pd.DataFrame,
         churn_col: str = "Churn",
         numeric_bins: int = 4,
-        max_item_cols: int = 20,
+        max_item_cols: int = 18,
+        max_unique_items: int = 50,
     ) -> "AssociationRulesMiner":
         """
         Construye transacciones orientadas a churn desde el dataset Telco (o similar).
 
-        Cada fila del DataFrame se convierte en una transacción con ítems del tipo
-        "columna=valor", lo que permite descubrir patrones como:
+        Cada fila se convierte en una transacción con ítems "columna=valor",
+        permitiendo descubrir patrones como:
             {Contract=Month-to-month, TechSupport=No} → {Churn=Yes}
 
+        Pipeline de reducción de cardinalidad (en orden):
+          1. Elimina columnas con cardinalidad igual al nº de filas (IDs).
+          2. Elimina columnas numéricas de cardinalidad muy alta si no son
+             binneables (e.g. timestamps).
+          3. Discretiza numéricas continuas en `numeric_bins` cuantiles.
+          4. Limita a `max_item_cols` columnas (las de menor cardinalidad primero,
+             con churn_col siempre incluida).
+          5. Construye transacciones vectorizadas (sin iterrows).
+          6. Conserva solo los `max_unique_items` ítems más frecuentes si el
+             total supera ese límite — evita explosión combinatoria en Apriori/FP.
+
         Args:
-            df:           DataFrame preprocesado (con columna churn_col como "Yes"/"No" o 0/1).
-            churn_col:    Nombre de la columna de churn (se incluye como ítem "Churn=Yes"/"Churn=No").
-            numeric_bins: Número de cuantiles para discretizar columnas numéricas continuas.
-            max_item_cols: Máximo de columnas a incluir (las de menor cardinalidad tienen prioridad).
+            df:               DataFrame crudo o preprocesado.
+            churn_col:        Columna target de churn ("Yes"/"No" o 0/1).
+            numeric_bins:     Cuantiles para discretizar numéricas (2–6).
+            max_item_cols:    Máximo de columnas a incluir en transacciones.
+            max_unique_items: Límite duro de ítems únicos totales. Aumentar
+                              implica más RAM; bajar produce reglas más genéricas.
 
         Returns:
             self
         """
         df_work = df.copy()
 
-        # Normalizar churn a string legible
+        # ── 1. Eliminar columnas tipo ID (cardinalidad ≈ nº filas) ────────
+        _n = len(df_work)
+        _id_cols = [
+            c for c in df_work.columns
+            if c != churn_col and df_work[c].nunique() > max(0.9 * _n, _n - 10)
+        ]
+        df_work.drop(columns=_id_cols, inplace=True, errors="ignore")
+
+        # ── 2. Normalizar churn a "Yes" / "No" ───────────────────────────
         if churn_col in df_work.columns:
             df_work[churn_col] = df_work[churn_col].map(
                 lambda v: "Yes" if str(v).strip().lower() in ("yes", "1", "true") else "No"
             )
 
-        bin_labels_map = {
-            4: ["Bajo", "Medio", "Alto", "Muy Alto"],
-            3: ["Bajo", "Medio", "Alto"],
+        # ── 3. Discretizar numéricas continuas con qcut ──────────────────
+        _bin_labels: dict[int, list[str]] = {
             2: ["Bajo", "Alto"],
+            3: ["Bajo", "Medio", "Alto"],
+            4: ["Bajo", "Medio", "Alto", "Muy Alto"],
+            5: ["Muy Bajo", "Bajo", "Medio", "Alto", "Muy Alto"],
+            6: ["Muy Bajo", "Bajo", "Medio-Bajo", "Medio-Alto", "Alto", "Muy Alto"],
         }
-        labels = bin_labels_map.get(numeric_bins, [str(i) for i in range(numeric_bins)])
+        labels = _bin_labels.get(numeric_bins, [str(i) for i in range(numeric_bins)])
 
-        # Discretizar columnas numéricas continuas
         num_cols = [
             c for c in df_work.select_dtypes(include=[np.number]).columns
-            if df_work[c].nunique() > numeric_bins
+            if c != churn_col and df_work[c].nunique() > numeric_bins
         ]
         for c in num_cols:
             try:
@@ -559,40 +607,58 @@ class AssociationRulesMiner:
                     duplicates="drop",
                 ).astype(str)
             except Exception:
-                df_work.drop(columns=[c], inplace=True)
+                df_work.drop(columns=[c], inplace=True, errors="ignore")
 
-        # Columnas binarias 0/1 → "col=Sí" / "col=No"
+        # Binarias 0/1 → "col=Sí" / "col=No"
         bin_cols = [
             c for c in df_work.select_dtypes(include=[np.number]).columns
-            if df_work[c].nunique() == 2
+            if c != churn_col and df_work[c].nunique() == 2
         ]
         for c in bin_cols:
-            df_work[c] = df_work[c].map(lambda v: f"{c}=Sí" if v else f"{c}=No")
+            df_work[c] = np.where(df_work[c].astype(float) != 0,
+                                  f"{c}=Sí", f"{c}=No")
 
-        # Columnas categóricas → "col=valor"
-        cat_cols = df_work.select_dtypes(include=["object", "category"]).columns.tolist()
-        for c in cat_cols:
-            df_work[c] = df_work[c].apply(
-                lambda v: f"{c}={v}" if not str(v).startswith(f"{c}=") else str(v)
+        # ── 4. Columnas categóricas → "col=valor" (vectorizado) ──────────
+        for c in df_work.select_dtypes(include=["object", "category"]).columns:
+            # Si el valor ya tiene el prefijo "col=" no duplicar
+            mask_prefix = df_work[c].astype(str).str.startswith(f"{c}=")
+            df_work[c] = np.where(
+                mask_prefix,
+                df_work[c].astype(str),
+                c + "=" + df_work[c].astype(str),
             )
 
-        # Seleccionar columnas con menor cardinalidad (Apriori es exponencial)
+        # ── 5. Seleccionar columnas de menor cardinalidad ─────────────────
         all_cols = df_work.columns.tolist()
         if len(all_cols) > max_item_cols:
-            # Priorizar: churn_col siempre incluida, luego las de menor cardinalidad
-            non_churn = [c for c in all_cols if c != churn_col]
-            non_churn_sorted = sorted(non_churn, key=lambda c: df_work[c].nunique())
-            all_cols = non_churn_sorted[: max_item_cols - 1] + [churn_col]
+            non_churn = sorted(
+                [c for c in all_cols if c != churn_col],
+                key=lambda c: df_work[c].nunique(),
+            )
+            all_cols = non_churn[: max_item_cols - 1] + [churn_col]
 
-        # Construir transacciones
-        transacciones = []
-        for _, row in df_work[all_cols].iterrows():
-            items = [
-                str(v) for v in row.values
-                if pd.notna(v) and str(v) not in ("nan", "None", "")
+        # ── 6. Construir transacciones vectorizadas (sin iterrows) ────────
+        _sub = df_work[all_cols].astype(str)
+        _invalid = {"nan", "None", "", "NaN"}
+        transacciones = [
+            [v for v in row if v not in _invalid]
+            for row in _sub.values.tolist()
+        ]
+        transacciones = [t for t in transacciones if len(t) >= 2]
+
+        # ── 7. Limitar ítems únicos totales ──────────────────────────────
+        _freq = pd.Series(
+            [item for t in transacciones for item in t]
+        ).value_counts()
+        if len(_freq) > max_unique_items:
+            # Churn=Yes y Churn=No siempre incluidos
+            _churn_items = {f"{churn_col}=Yes", f"{churn_col}=No"}
+            _top = set(_freq.head(max_unique_items).index) | _churn_items
+            transacciones = [
+                [i for i in t if i in _top]
+                for t in transacciones
             ]
-            if len(items) >= 2:
-                transacciones.append(items)
+            transacciones = [t for t in transacciones if len(t) >= 2]
 
         return self.fit(transacciones)
 
@@ -602,6 +668,7 @@ class AssociationRulesMiner:
         min_lift: float = 1.0,
         min_support: float = 0.01,
         churn_col: str = "Churn",
+        max_len: int = 2,
     ) -> pd.DataFrame:
         """
         Filtra reglas cuyo consecuente contiene el ítem de churn positivo.
@@ -610,7 +677,8 @@ class AssociationRulesMiner:
             min_confidence: Confianza mínima.
             min_lift:       Lift mínimo.
             min_support:    Soporte mínimo.
-            churn_col:      Prefijo del ítem de churn (e.g. "Churn" → busca "Churn=Yes").
+            churn_col:      Prefijo del ítem de churn (→ busca "churn_col=Yes").
+            max_len:        Longitud máxima de itemsets (se pasa a get_rules).
 
         Returns:
             DataFrame de reglas filtradas, ordenadas por lift descendente.
@@ -619,6 +687,7 @@ class AssociationRulesMiner:
             min_confidence=min_confidence,
             min_lift=min_lift,
             min_support=min_support,
+            max_len=max_len,
         )
         if all_rules.empty:
             return all_rules

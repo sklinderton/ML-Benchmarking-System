@@ -2645,9 +2645,20 @@ with tab_churn:
                 from mlbenchmark.association_rules import AssociationRulesMiner
 
                 _ar_miner_ch = AssociationRulesMiner()
+                # Preparar df para AR: eliminar columnas ID (cardinalidad = nfilas)
+                # y limitar categóricas a ≤ 20 valores únicos para evitar OOM en Apriori
+                _df_ar_input = _df_raw.copy()
+                _n_ar = len(_df_ar_input)
+                _churn_ar_col = _target_churn if _target_churn in _df_ar_input.columns else "Churn"
+                _drop_ar = [
+                    c for c in _df_ar_input.columns
+                    if c != _churn_ar_col and _df_ar_input[c].nunique() > min(20, _n_ar * 0.05)
+                    and _df_ar_input[c].dtype == object
+                ]
+                _df_ar_input.drop(columns=_drop_ar, inplace=True, errors="ignore")
                 _ar_miner_ch.fit_from_churn_dataframe(
-                    _df_raw,
-                    churn_col=_target_churn if _target_churn in _df_raw.columns else "Churn",
+                    _df_ar_input,
+                    churn_col=_churn_ar_col,
                     numeric_bins=_ar_bins_ch,
                 )
                 _df_ch_rules = _ar_miner_ch.get_churn_rules(
