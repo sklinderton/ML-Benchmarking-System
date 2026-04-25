@@ -2542,7 +2542,8 @@ with tab_churn:
         if isinstance(_res, pd.DataFrame) and not _res.empty:
             st.markdown('<span class="phase-badge ph5">Fase 5 · Evaluation</span>', unsafe_allow_html=True)
             st.subheader("📊 Resultados de Clasificación")
-            show_df(style_table(_res))
+            _res_display = _res[[c for c in _res.columns if not c.startswith("_")]].copy()
+            show_df(style_table(_res_display))
             _best_row = _res.loc[_res["F1"].idxmax()] if "F1" in _res.columns else _res.iloc[0]
             st.success(f"🥇 Mejor modelo: **{_best_row.name if hasattr(_best_row, 'name') else '—'}** "
                         f"· F1={fmt(_best_row.get('F1', None))} "
